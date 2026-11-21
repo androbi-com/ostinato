@@ -1,7 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """SLOOP editor protocol (SysEx over USB-MIDI): framing, encoders, request builders and reply parsers.
 
 A Python port of the `/*PROTO-BEGIN*/ .. /*PROTO-END*/` section of `web/editor.html` in isod89/sloop-fm1;
 the reference is `web/EDITOR_PROTOCOL.md`. Everything here is pure (no I/O) so it can be unit-tested.
+
+Derived from SLOOP's web editor, Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments,
+licensed under GPL-3.0-only (https://github.com/isod89/sloop-fm1). This port: Copyright (C) 2026 androbi,
+also GPL-3.0-only (see LICENSE).
 
 Frames: F0 7D 46 4C <cmd> <args...> F7. Every data byte is 7 bit.
 """

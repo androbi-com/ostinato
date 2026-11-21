@@ -1,4 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-only
 """A simulated FM-1 running SLOOP, for tests and for trying the device server without hardware (ostinato-device --simulate sloop).
+
+Its data (data/editor_mock.json) comes from the mock device of SLOOP's web editor, Copyright (C) 2026 Leo
+Kuroshita (@kurogedelic), Hügelton Instruments, GPL-3.0-only (https://github.com/isod89/sloop-fm1).
 
 Seeded from `tests/fixtures/editor_mock.json`: the replies of the web editor's own mock device
 (`makeMockDevice` in web/editor.html), dumped by `tools/dump_editor_mock.mjs`. Its state is then kept here

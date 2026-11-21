@@ -3,6 +3,8 @@ name = "ostinato"
 version = "0.3.0"
 description = "Ostinato: Claude and music devices. A device server with generic sequences, staffs and generative algorithms over device backends (the M-VAVE FM-1 with SLOOP), and a device-independent MCP shim"
 readme = "README.md"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
 authors = [
     { name = "androbi", email = "denk@us.es" }
 ]

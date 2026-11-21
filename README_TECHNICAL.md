@@ -312,3 +312,20 @@ The simulator (`backends/fm1_sloop/sim.py`) is seeded from the SLOOP web editor'
 | `test_protocol.py`, `test_backend_sloop.py`, `test_sync.py` | SLOOP: encoders / parsers, the capabilities on the simulator, pushes |
 | `test_states.py` | Saved states: save, load, compare, apply whole / in part / exactly, undo |
 | `test_daemon.py`, `test_owner.py`, `test_ui.py` | The device server and shim, the single-instance lock, the page's routes |
+
+## License
+
+Copyright (C) 2026 androbi. GPL-3.0-only: the full text is in [LICENSE](LICENSE); `pyproject.toml` declares it
+(`license = "GPL-3.0-only"`).
+
+Why GPL: `backends/fm1_sloop/protocol.py` is a port of the protocol section of SLOOP's `web/editor.html`, and the
+simulator's data (`backends/fm1_sloop/data/editor_mock.json`, dumped by `tools/dump_editor_mock.mjs`) comes from that
+editor's mock device. SLOOP is Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments, under
+GPL-3.0-only ([isod89/sloop-fm1](https://github.com/isod89/sloop-fm1)); those files carry an
+`SPDX-License-Identifier: GPL-3.0-only` header and the credit. A program that only speaks the protocol (written from
+`EDITOR_PROTOCOL.md` alone, without the editor's code or data) would not be bound by this, if ever a permissive
+backend were wanted.
+
+The dependencies are compatible: mcp, mido, python-rtmidi, anyio, pydantic (MIT); music21, starlette, uvicorn
+(BSD-3-Clause); verovio (LGPL-3.0). M-VAVE and FM-1 are trademarks of their owners; Ostinato is not affiliated with
+them.

@@ -149,3 +149,16 @@ update.
 - [README_TECHNICAL.md](README_TECHNICAL.md): how it is built, every tool, the file formats, the SLOOP protocol
   details, and how to add a device.
 - [ALGORITHMS.md](ALGORITHMS.md): the generative algorithms and all their settings.
+
+---
+
+## License
+
+Ostinato is free software under the [GNU General Public License v3.0](LICENSE) (GPL-3.0-only): you may use, share
+and change it, and versions you pass on stay under the same license.
+
+It talks to the FM-1 through the editor protocol of [SLOOP](https://github.com/isod89/sloop-fm1) by Leo Kuroshita
+(Hügelton Instruments), also GPL-3.0-only, and parts of Ostinato are based on SLOOP's web editor. Thank you!
+
+Ostinato is an independent project. M-VAVE and FM-1 are trademarks of their respective owners, who do not endorse or
+support it.

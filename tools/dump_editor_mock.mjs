@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Dumps the SLOOP web editor's own mock device (editor.html, PROTO section) as request -> reply frames,
 // used as the reference fixture for the Python simulator (tests/fixtures/editor_mock.json).
 // usage: node tools/dump_editor_mock.mjs <path to sloop-fm1/web/editor.html> <out.json>
