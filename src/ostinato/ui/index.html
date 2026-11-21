@@ -22,6 +22,7 @@
 
 <nav class="tabs" role="tablist">
   <button role="tab" data-tab="tracks" aria-selected="true">Tracks</button>
+  <button role="tab" data-tab="states" aria-selected="false">States</button>
   <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
   <button role="tab" data-tab="activity" aria-selected="false">Activity</button>
 </nav>
@@ -30,6 +31,12 @@
   <section id="tab-tracks" class="tab">
     <div id="notice" class="notice" hidden></div>
     <div id="tracks"></div>
+  </section>
+  <section id="tab-states" class="tab" hidden>
+    <p class="lead">Save the device's whole state to a file on this computer (notes, sounds, mix, settings), and put
+      it back later, all of it or part of it. Loading a state only reads it: nothing changes on the device until you
+      apply it, and the device's state before is saved as "before apply" first.</p>
+    <div id="states"></div>
   </section>
   <section id="tab-settings" class="tab" hidden>
     <p class="lead">Settings are saved to your setup folder and used by every client (this page, Claude) from the

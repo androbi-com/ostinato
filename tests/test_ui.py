@@ -128,6 +128,54 @@ def test_mute_track(ui):
     assert st == 200 and not r["muted"]
 
 
+def test_sounds(ui):
+    c, _, _ = ui
+    st, r = c.json("GET", "/api/ui/track/2/sounds")
+    assert st == 200 and {"group": "DIGITAL", "name": "WURLI"} in r["sounds"]
+    st, r = c.json("POST", "/api/ui/track/2/sound", {"name": "WURLI", "group": "DIGITAL"})
+    assert st == 200 and "DIGITAL WURLI" in r["text"]
+    _, s = c.json("GET", "/api/ui/state")
+    assert s["tracks"][1]["instrument"] == "DIGITAL WURLI"
+    st, r = c.json("POST", "/api/ui/track/2/sound", {"name": "NOPE"})
+    assert st == 400
+    st, r = c.json("GET", "/api/ui/track/4/sounds")
+    assert st == 200 and all(x["group"] == "KIT" for x in r["sounds"])
+
+
+def test_mix(ui):
+    c, _, _ = ui
+    _, s = c.json("GET", "/api/ui/state")
+    t1 = s["tracks"][0]
+    assert t1["level"]["max"] == 127 and t1["level"]["db_zero"] == 112 and t1["pan"]["min"] == -64
+    st, r = c.json("POST", "/api/ui/track/1/mix", {"level": 100, "pan": -32})
+    assert st == 200 and "-6.0dB" in r["text"] and "-50%" in r["text"]
+    _, s = c.json("GET", "/api/ui/state")
+    assert s["tracks"][0]["level"]["value"] == 100 and s["tracks"][0]["pan"]["value"] == -32
+    st, r = c.json("POST", "/api/ui/track/4/mix", {"level": "-3dB"})
+    assert st == 400
+
+
+def test_states_routes(ui):
+    c, _, _ = ui
+    st, r = c.json("POST", "/api/ui/states/save", {"name": "ui test", "note": "n"})
+    assert st == 200 and "saved" in r["text"]
+    _, r = c.json("GET", "/api/ui/states")
+    assert r["states"][0]["name"] == "ui test" and r["loaded"] is None
+    c.json("POST", "/api/ui/track/1/clear", {})
+    st, r = c.json("POST", "/api/ui/states/load", {"name": "ui test"})
+    assert st == 200 and r["loaded"]["name"] == "ui test"
+    assert any(x.startswith("track 1: notes differ") for x in r["loaded"]["compare"])
+    st, r = c.json("POST", "/api/ui/states/apply", {"tracks": [1], "parts": ["notes"]})
+    assert st == 200 and "applied" in r["text"]
+    _, r = c.json("GET", "/api/ui/states")
+    assert r["loaded"]["compare"][0] == "track 1: as saved"
+    assert {"ui test", "before apply"} <= {x["name"] for x in r["states"]}
+    st, r = c.json("POST", "/api/ui/states/load", {"name": "nope"})
+    assert st == 400
+    st, r = c.json("POST", "/api/ui/states/delete", {"name": "ui test"})
+    assert st == 200
+
+
 def test_settings(ui, tmp_path):
     c, _, _ = ui
     st, r = c.json("GET", "/api/ui/setups")

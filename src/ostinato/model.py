@@ -116,6 +116,23 @@ class WriteReport:
 
 
 @dataclass
+class MixValue:
+    """A track's level or pan on the device's own scale (the mixer capability)."""
+    value: int
+    min: int
+    max: int
+    text: str  # as the device shows it ("-18.0dB", "+25%")
+    db_zero: int | None = None  # a level in dB: the value of 0 dB...
+    db_step: float | None = None  # ...and dB per unit (value <= min: off); None: no dB scale
+
+    def to_db(self, v: int | None = None) -> float | None:
+        v = self.value if v is None else v
+        if self.db_zero is None or not self.db_step or v <= self.min:
+            return None
+        return (v - self.db_zero) * self.db_step
+
+
+@dataclass
 class DeviceEvent:
     """Something that changed on the device (from the changes capability), for the change log and the engine."""
     kind: str  # "sequence", "parameter", "selection", "reload", "connection"

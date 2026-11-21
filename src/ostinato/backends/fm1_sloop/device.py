@@ -384,6 +384,216 @@ class SloopDevice:
         res["undone"] = snap["label"]
         return res
 
+    # ------------------------------------------------------------------ whole-state writes (saved states)
+    def write_locks(self, t: int, locks: list[P.Lock]) -> list[str]:
+        """Make track t's parameter locks exactly `locks` (one LOCK_SET each: removed, then changed / added).
+        -> what could not be written."""
+        st = self.state
+        if st.info.proto < 7:
+            return ["locks need SLOOP 2.4+ (protocol 7)"] if locks else []
+        notes = []
+        with self._sync:
+            with st.lock:
+                cur = {(l.step, l.param): l.value for l in (st.tracks[t].locks or [])}
+            want = {(l.step, l.param): l.value for l in locks}
+            for (i, pid) in cur.keys() - want.keys():
+                self.rq(req.lock_set(t, i, pid))
+            for (i, pid), v in want.items():
+                if cur.get((i, pid)) == v:
+                    continue
+                r = P.parse_lock_set(self.rq(req.lock_set(t, i, pid, v)))
+                if r["rc"]:
+                    notes.append(f"lock step {i + 1} param {pid}: " +
+                                 {1: "out of range", 2: "not lockable", 3: "no free slot (24 a track)"}.get(r["rc"], f"rc {r['rc']}"))
+            _, got = P.parse_lock_get(self.rq(req.lock_get(t)))
+            with st.lock:
+                st.tracks[t].locks = got
+        return notes
+
+    def write_micro(self, t: int, micro: list[int]) -> int:
+        """Track t's per-step nudges (-32..31). -> steps changed."""
+        st = self.state
+        if st.info.proto < 7:
+            return 0
+        n = 0
+        with self._sync:
+            with st.lock:
+                cur = list(st.tracks[t].micro or [0] * st.info.nstep)
+            for i, v in enumerate(micro[: st.info.nstep]):
+                if i < len(cur) and cur[i] == v:
+                    continue
+                self.rq(req.micro_set(t, i, v))
+                n += 1
+            _, got = P.parse_micro_get(self.rq(req.micro_get(t)))
+            with st.lock:
+                st.tracks[t].micro = got
+        return n
+
+    def write_fills(self, t: int, fill_raw: list[int]) -> int:
+        """Track t's fill conditions, as stored (16 bytes: 2 bits a step). -> steps changed."""
+        st = self.state
+        if st.info.proto < 8:
+            return 0
+        n = 0
+        with self._sync:
+            with st.lock:
+                cur = list(st.tracks[t].fill_raw or [0] * 16)
+            for i in range(min(st.info.nstep, 64)):
+                c = P.fill_of(fill_raw, i)
+                if c != P.fill_of(cur, i):
+                    self.rq(req.fill_set(t, i, c))
+                    n += 1
+            _, got = P.parse_fill_get(self.rq(req.fill_get(t)))
+            with st.lock:
+                st.tracks[t].fill_raw = got
+        return n
+
+    def set_globals(self, values: dict[int, int]) -> dict[int, int]:
+        """Globals by id (SET scope 1), only those that differ. -> {id: value as the device took it}."""
+        st = self.state
+        out = {}
+        with self._sync:
+            for gid, v in values.items():
+                with st.lock:
+                    if gid < len(st.globals) and st.globals[gid] == v:
+                        continue
+                _, _, got = P.parse_value(self.rq(req.set_global(gid, v)))
+                out[gid] = got
+                with st.lock:
+                    if gid < len(st.globals):
+                        st.globals[gid] = got
+                if gid == self._drum_level_id():
+                    for tr in st.tracks:
+                        if st.is_drum(tr.index):
+                            tr.level = got
+        return out
+
+    def select_track(self, t: int) -> None:
+        with self._sync:
+            self.rq(req.track(t))
+            self._device_sel = t
+            with self.state.lock:
+                self.state.selected = t
+
+    # ---- the working project as one object (backup protocol, v6)
+    def read_project_blob(self) -> bytes:
+        """The working project exactly as the device stores it (BK_LIST, then BK_GET object 0 in pieces)."""
+        info = self.state.info
+        if info is None or info.proto < 6:
+            raise NoDevice("an exact project copy needs SLOOP 2.3+ (protocol 6)")
+        with self._sync:
+            rc, objs = P.parse_bk_list(self.rq(req.bk_list(), timeout=2.0))
+            if rc:
+                raise LinkError(f"BK_LIST: {P.BK_RC.get(rc, rc)}")
+            obj = next((o for o in objs if o["id"] == 0), None)
+            if obj is None or not obj["length"]:
+                raise LinkError("the device lists no working project")
+            out = bytearray()
+            while len(out) < obj["length"]:
+                n = min(256, obj["length"] - len(out))
+                r = P.parse_bk_get(self.rq(req.bk_get(0, len(out), n), timeout=1.0))
+                if r["rc"]:
+                    raise LinkError(f"BK_GET: {P.BK_RC.get(r['rc'], r['rc'])}")
+                if r["offset"] != len(out) or not r["data"]:
+                    raise LinkError(f"BK_GET: unexpected piece at {r['offset']} ({len(r['data'])} bytes)")
+                out += r["data"]
+            blob = bytes(out[: obj["length"]])
+            import zlib
+
+            if (zlib.crc32(blob) & 0xFFFFFFFF) != obj["crc"]:
+                raise LinkError("the project copy does not match the device's checksum")
+            return blob
+
+    def write_project_blob(self, blob: bytes, source: str = "server") -> None:
+        """Replace the working project with `blob` (BK_PUT object 0): loaded at once. The song must be stopped.
+        Everything is re-read afterwards."""
+        import zlib
+
+        info = self.state.info
+        if info is None or info.proto < 6:
+            raise NoDevice("an exact project copy needs SLOOP 2.3+ (protocol 6)")
+        with self._sync:
+            def check(r, what):
+                if r["rc"]:
+                    try:
+                        self.rq(req.bk_put_abort(0))
+                    except LinkError:
+                        pass
+                    raise ValueError(f"{what}: {P.BK_RC.get(r['rc'], r['rc'])}")
+            check(P.parse_bk_put(self.rq(req.bk_put_begin(0, len(blob), zlib.crc32(blob) & 0xFFFFFFFF), timeout=2.0)),
+                  "begin")
+            for off in range(0, len(blob), 256):
+                check(P.parse_bk_put(self.rq(req.bk_put_data(0, off, blob[off:off + 256]), timeout=1.0)), "data")
+            check(P.parse_bk_put(self.rq(req.bk_put_commit(0), timeout=3.0)), "commit")
+            self.refresh(None)
+            self.state.emit("reload", source=source, track=self.state.selected + 1, changed_tracks="all")
+
+    def set_level(self, t: int, level: int, source: str = "server") -> int:
+        """Track t's level (0..127) through TRACK_MIX: any track, no selection; on the drum track it is the global
+        drum level. RAM only. -> the level the device took (after clamping)."""
+        st = self.state
+        info = st.info
+        if info is None or not info.ntrk:
+            raise NoDevice("setting a track's level needs SLOOP firmware with tracks (protocol 3+)")
+        if not 0 <= t < len(st.tracks):
+            raise ValueError(f"track {t + 1} does not exist")
+        with self._sync:
+            with st.lock:
+                tr = st.tracks[t]
+                old, mute = tr.level, tr.mute
+            r = P.parse_track_mix(self.rq(req.track_mix_set(t, level, mute)))
+            drum = st.is_drum(t)
+            with st.lock:
+                tr.level = r["level"]
+                tr.mute = r["mute"]
+                if not drum and tr.params:
+                    tr.params[0] = r["level"]
+                elif drum and (gid := self._drum_level_id()) is not None and gid < len(st.globals):
+                    st.globals[gid] = r["level"]
+            st.emit("mix", source=source, track=t + 1, label="LVL", old=old, value=r["level"])
+            return r["level"]
+
+    def _drum_level_id(self) -> int | None:
+        """The global holding the drum track's level (G_DRLVL: the globals' LVL)."""
+        return self.state.global_id("LVL")
+
+    def load_preset(self, t: int, engine: int, preset: int, source: str = "server") -> tuple[int, int]:
+        """Load factory preset `preset` of `engine` onto synth track t (its sound; the pattern, mix and key stay).
+        PRESET acts on the selected track: t is selected for the moment, then the selection is put back.
+        RAM only. -> the track's (engine, preset) as read back."""
+        st = self.state
+        info = st.info
+        if info is None or not info.ntrk:
+            raise NoDevice("loading a sound onto a track needs SLOOP firmware with tracks (protocol 3+)")
+        if not 0 <= t < len(st.tracks):
+            raise ValueError(f"track {t + 1} does not exist")
+        if st.is_drum(t):
+            raise ValueError("the drum track has no presets: set its kit instead")
+        if not 0 <= engine < info.nengines:
+            raise ValueError(f"no engine {engine}")
+        with self._sync:
+            sel = self._device_sel
+            try:
+                if sel != t:
+                    self.rq(req.track(t))  # (TRACK pushes no RELOAD)
+                    self._device_sel = t
+                self.rq(req.preset(engine, preset), timeout=1.5)
+                # the engine's parameters mean something else now: their names, then the track
+                if engine not in st.engine_desc:
+                    self._read_engine_desc(engine)
+                self._read_track(t)
+            finally:
+                if sel != t:
+                    self.rq(req.track(sel))
+                    self._device_sel = sel
+                    with st.lock:
+                        st.selected = sel
+            with st.lock:
+                tr = st.tracks[t]
+                got = (tr.engine, tr.preset)
+            st.emit("sound", source=source, track=t + 1, engine=st.engine_name(t), preset=st.preset_name(t))
+            return got
+
     def read_steps(self, t: int, length: int | None = None) -> None:
         """Re-read steps 0..length-1 of track t (pushes never cover tracks that are not selected)."""
         with self._sync:
@@ -453,6 +663,10 @@ class SloopDevice:
                         if pid < len(st.globals):
                             old = st.globals[pid]
                             st.globals[pid] = v
+                        if pid == self._drum_level_id():  # (the drum track's level: GLO > DRUMS LEVEL)
+                            for tr in st.tracks:
+                                if st.is_drum(tr.index):
+                                    tr.level = v
                     else:
                         tr = st.tracks[t]
                         if pid >= len(tr.params):
@@ -480,7 +694,7 @@ class SloopDevice:
                     old = tr.params[pid] if pid < len(tr.params) else None
                     if pid < len(tr.params):
                         tr.params[pid] = v
-                    if pid == 0:
+                    if pid == 0 and not st.is_drum(t):  # (the drum track's P_LEVEL is unused)
                         tr.level = v
                     elif pid == st.param_id("MUTE", default=40):
                         tr.mute = 1 if v else 0

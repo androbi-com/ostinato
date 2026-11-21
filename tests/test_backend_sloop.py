@@ -9,7 +9,7 @@ from ostinato.model import Event, Grid, Note, Sequence
 def test_capabilities(sloop):
     b, _ = sloop
     assert set(b.capabilities()) == {"tracks", "reader", "writer", "keys", "instruments", "tempo", "changes",
-                                     "parameters", "controls", "mixer"}
+                                     "parameters", "controls", "mixer", "sounds", "states"}
     tracks = b.tracks.list_tracks()
     assert [t.track for t in tracks] == [1, 2, 3, 4] and tracks[3].kind == "drums"  # (SLOOP says 4)
     assert b.instruments.instrument(1).startswith("ANALOG") and b.instruments.instrument(4).startswith("DRUMS")
@@ -130,3 +130,76 @@ def test_controls_knob_and_keys(sloop):
     sim.user_press_key(53)
     assert wait_for(lambda: any(e.kind == "press" and e.value == 53 for e in got))
     k.close()
+
+
+# ---------------------------------------------------------------- sounds (presets, kits)
+
+def test_sounds_lists_presets_and_kits(sloop):
+    b, _ = sloop
+    synth = b.sounds.sounds(1)
+    assert ("ANALOG", "MONO BASS") in synth and ("DIGITAL", "RHODES") in synth and ("PHYS", "SITAR") in synth
+    kits = b.sounds.sounds(4)
+    assert kits and all(g == "KIT" for g, _ in kits)
+
+
+def test_set_sound_loads_preset_and_keeps_selection(sloop):
+    b, sim = sloop
+    sel = sim.sel
+    t = next(i for i in range(3) if i != sel)  # a track that is not selected on the device
+    steps_before = [list(s.active_notes) for s in sim.tracks[t]["steps"]]
+    now = b.sounds.set_sound(t + 1, "digital / marimba")
+    assert sim.tracks[t]["engine"] == 1 and sim.tracks[t]["preset"] == 6 and now == "DIGITAL MARIMBA"
+    assert sim.sel == sel and b.dev.state.selected == sel  # the selection is put back
+    assert [list(s.active_notes) for s in sim.tracks[t]["steps"]] == steps_before
+    assert b.instruments.instrument(t + 1) == "DIGITAL MARIMBA"
+    b.sounds.set_sound(t + 1, "Sitar")  # unique: the engine is found
+    assert sim.tracks[t]["engine"] == 10
+
+
+def test_set_sound_errors(sloop):
+    b, sim = sloop
+    import pytest
+
+    with pytest.raises(ValueError, match="did you mean"):
+        b.sounds.set_sound(1, "RHODS")
+    with pytest.raises(ValueError, match="no sound"):
+        b.sounds.set_sound(1, "RHODES", group="ANALOG")
+    with pytest.raises(ValueError, match="no sound"):
+        b.sounds.set_sound(4, "RHODES")  # the drum track takes kits
+    assert not [w for w in sim.writes if w[0] == P.Cmd.PRESET]
+
+
+def test_set_drum_kit(sloop):
+    b, sim = sloop
+    kits = [n for _, n in b.sounds.sounds(4)]
+    target = kits[1] if not b.instruments.instrument(4).endswith(kits[1]) else kits[2]
+    now = b.sounds.set_sound(4, target.lower())
+    assert now.endswith(target)
+    pe0 = b.dev.state.info.pe0
+    assert any(w[0] == P.Cmd.TRACK_PARAM and w[1][:2] == [3, pe0] for w in sim.writes)
+
+
+# ---------------------------------------------------------------- mixer: level and pan
+
+def test_level_synth_and_drums(sloop):
+    b, sim = sloop
+    lv = b.mixer.level(1)
+    assert lv.min == 0 and lv.max == 127 and lv.db_zero == 112 and lv.text.endswith("dB")
+    sel = sim.sel
+    after = b.mixer.set_level(1, 100)
+    assert after.value == 100 and after.text == "-6.0dB" and after.to_db() == -6
+    assert sim.tracks[0]["p"][0] == 100 and sim.tracks[0]["level"] == 100 and sim.sel == sel
+    assert b.mixer.set_level(1, 500).value == 127  # (clamped)
+    drums = b.mixer.level(4)
+    assert drums.db_zero is None and drums.text == str(drums.value)
+    assert b.mixer.set_level(4, 90).value == 90 and sim.tracks[3]["level"] == 90
+    assert b.mixer.muted(4) is False and sim.tracks[3]["mute"] == 0  # (mute kept)
+
+
+def test_pan(sloop):
+    b, sim = sloop
+    p = b.mixer.pan(2)
+    assert (p.min, p.max) == (-64, 63)
+    after = b.mixer.set_pan(2, -32)
+    assert after.value == -32 and after.text == "-50%"
+    assert b.mixer.set_pan(2, 99).value == 63

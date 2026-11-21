@@ -6,7 +6,10 @@ session; nothing here knows a firmware.
                            ostinato_track_data, ostinato_refresh, ostinato_changes
     keys (+ reader):       ostinato_scales
     parameters:            ostinato_parameters
-    mixer:                 ostinato_mute_track
+    mixer:                 ostinato_mute_track, ostinato_set_level
+    sounds:                ostinato_instruments, ostinato_set_instrument
+    reader (states):       ostinato_save_state, ostinato_list_states, ostinato_load_state, ostinato_show_state,
+                           ostinato_delete_state; + writer: ostinato_apply_state
     writer (+ reader):     ostinato_write_notes, ostinato_write_midi, ostinato_clear_track, ostinato_undo,
                            ostinato_generators, ostinato_generate
     + controls:            ostinato_generative_mode
@@ -275,7 +278,192 @@ def register(mcp, session) -> list[str]:
             if (e := ready(track)):
                 return e
             actual = await _run(session.set_track_muted, track, muted)
-            return f"Track {track} is {'muted' if actual else 'unmuted'}."
+            lv = await _run(session.track_level, track)
+            return f"Track {track} is {'muted' if actual else 'unmuted'} (level {lv.text})."
+
+        def mix_line(t: int) -> str:
+            lv, pn = session.track_level(t), session.track_pan(t)
+            return (f"track {t}: level {lv.text}" + (f", pan {pn.text}" if pn else "")
+                    + (" (muted)" if session.track_muted(t) else ""))
+
+        @tool(WRITE)
+        async def ostinato_set_level(track: int | None = None, level: str | int | float | None = None,
+                                     pan: str | int | float | None = None, relative: bool = False) -> str:
+            """A track's volume (level) and stereo position (pan); with no level and no pan (or no track): the mix
+            of every track, unchanged.
+
+            level: "-12dB" (0dB is unity), "75%" (of the device's range), "off", or a number on the device's own scale
+              (SLOOP: 0..127). The drum track's level has no dB scale on SLOOP: use a percentage or a number.
+            relative: change the level by that much instead ("+3dB", "-10%").
+            pan: "center", "L30" / "R50" (percent toward one side), "left" / "right", or "-30%" / "+50%" (- = left).
+            Clamped to the device's range; the reply gives the values before and after. Not undoable with
+            ostinato_undo (set the old value again)."""
+            if (e := ready(track)):
+                return e
+            if track is None or (level is None and pan is None):
+                ts = [track] if track else [t.track for t in session.tracks()]
+                return "Mix: " + "; ".join([await _run(mix_line, t) for t in ts])
+            out = []
+            try:
+                if level is not None:
+                    before, after = await _run(session.set_track_level, track, level, relative)
+                    out.append(f"level {after.text} (was {before.text})")
+                if pan is not None:
+                    before, after = await _run(session.set_track_pan, track, pan)
+                    out.append(f"pan {after.text} (was {before.text})")
+            except ValueError as ex:
+                return (f"Track {track}: " + "; ".join(out) + ". " if out else "") + f"Not changed: {ex}"
+            return f"Track {track}: " + "; ".join(out) + "."
+
+    # ------------------------------------------------------------------ sounds
+    if b.sounds is not None:
+        @tool(RO)
+        async def ostinato_instruments(track: int | None = None) -> str:
+            """The sounds (instruments) a track can be set to with ostinato_set_instrument, grouped (on a synth: by
+            engine). track omitted: the list of every kind of track (synth tracks share theirs), with the current
+            sound of each track."""
+            if (e := ready(track)):
+                return e
+            tracks = session.tracks()
+            if track is None:
+                seen: dict[str, int] = {}
+                for t in tracks:  # one list per kind of track
+                    seen.setdefault(t.kind if t.kind == "drums" else "synth", t.track)
+                wanted = list(seen.values())
+            else:
+                wanted = [track]
+            out = ["Current: " + "; ".join(f"track {t.track}: {session.instrument(t.track) or '?'}" for t in tracks)]
+            for t in wanted:
+                try:
+                    choices = await _run(session.sounds, t)
+                except ValueError as ex:
+                    out.append(f"\nTrack {t}: {ex}")
+                    continue
+                groups: dict[str, list[str]] = {}
+                for g, n in choices:
+                    groups.setdefault(g, []).append(n)
+                kind = "drums" if session.track_info(t).kind == "drums" else "synth"
+                who = (f"Track {t}" if track is not None else
+                       ("The drum track" if kind == "drums" else
+                        "Synth tracks " + ", ".join(str(x.track) for x in tracks if x.kind != "drums")))
+                out.append(f"\n{who} ({len(choices)} sounds):")
+                out += [f"  {g}: {', '.join(ns)}" for g, ns in groups.items()]
+            return "\n".join(out)
+
+        @tool(WRITE)
+        async def ostinato_set_instrument(track: int, instrument: str, group: str | None = None) -> str:
+            """Set a track's sound (instrument): a name from ostinato_instruments, e.g. "RHODES", "DIGITAL / RHODES"
+            (engine / preset) or, on the drum track, a kit ("LATIN"). group: the engine, when the name is in
+            several. Changes the sound only (on SLOOP: sound, sends, arp; the notes, mix and key stay). Not undoable
+            with ostinato_undo: the reply names the previous sound, set it again to go back."""
+            if (e := ready(track)):
+                return e
+            try:
+                before, now = await _run(session.set_sound, track, instrument, group)
+            except ValueError as ex:
+                return f"Sound not changed: {ex}"
+            return f"Track {track} is now {now}" + (f" (was {before})." if before else ".")
+
+    # ------------------------------------------------------------------ saved states
+    if b.reader is not None:
+        from . import states as ST
+
+        @tool(FILE)
+        async def ostinato_save_state(name: str, note: str | None = None, exact: bool = True,
+                                      overwrite: bool = False) -> str:
+            """Save the device's whole state to a file on this computer (the device's own storage is small):
+            every track's notes, sound, mix, key and the device's settings. name: a name ("before gig": kept in
+            ostinato's states folder) or a file path (.json). note: a description. exact: also keep the device's
+            own copy of its project (put back byte for byte; SLOOP 2.3+). overwrite: replace a state of that name.
+            ostinato_load_state reads it back, ostinato_apply_state puts it on the device."""
+            if (e := ready()):
+                return e
+            try:
+                s, warnings = await _run(session.save_state, name, note, exact, overwrite)
+            except (ST.StateError, ValueError, OSError) as ex:
+                return f"Not saved: {ex}"
+            return "Saved.\n" + s.summary() + "".join(f"\nnote: {w}" for w in warnings)
+
+        @tool(RO)
+        async def ostinato_list_states() -> str:
+            """The saved states (ostinato_save_state), newest first: name, when, device, note, the tracks' sounds."""
+            xs = await _run(ST.list_states)
+            if not xs:
+                return f"No saved states yet (they go to {ST.states_dir()})."
+            lines = [f"Saved states in {ST.states_dir()}:"]
+            for x in xs:
+                lines.append(f"- {x['name']}  ({x['saved_at']}, {x['device']} {x['firmware'] or ''}"
+                             + (", exact copy" if x["exact"] else "") + ")" + (f": {x['note']}" if x["note"] else "")
+                             + "\n    " + "; ".join(x["tracks"]))
+            loaded = session.loaded
+            return "\n".join(lines) + (f"\n\nLoaded now: {loaded.name!r}" if loaded else "")
+
+        @tool(RO)
+        async def ostinato_load_state(name: str) -> str:
+            """Read a saved state (a name from ostinato_list_states, or a file path) into ostinato, without
+            touching the device: what it holds and how it differs from the device now. Then ostinato_show_state
+            shows its notes and ostinato_apply_state puts it (or part of it) on the device."""
+            try:
+                s = await _run(session.load_state, name)
+            except (ST.StateError, ValueError) as ex:
+                return f"Not loaded: {ex}"
+            out = s.summary()
+            if not session.not_ready():
+                out += "\n\nCompared with the device now:\n" + "\n".join(
+                    "  " + x for x in await _run(session.compare_state))
+            return out
+
+        @tool(RO)
+        async def ostinato_show_state(track: int | None = None, view: Literal["grid", "list", "roll"] = "grid") -> str:
+            """Show the notes of the loaded state (ostinato_load_state): one track or all (views as
+            ostinato_show_track)."""
+            s = session.loaded
+            if s is None:
+                return "No state is loaded: ostinato_load_state first."
+            ts = [track] if track else sorted(s.sequences)
+            out = []
+            for t in ts:
+                seq = s.sequences.get(t)
+                if seq is None:
+                    out.append(f"Track {t}: not in the state {s.name!r}")
+                    continue
+                td = s.track(t)
+                key = ST.key_from(td.get("key")) if seq.kind != "drums" else None
+                out.append(f"Track {t} ({seq.kind}) in {s.name!r}: {td.get('instrument') or ''}\n"
+                           + V.pattern_line(seq) + "\n\n" + V.view(seq, view, key, None,
+                                                                    drum_names(t) if seq.kind == "drums" else None))
+            return "\n\n".join(out)
+
+        if b.writer is not None:
+            @tool(WRITE)
+            async def ostinato_apply_state(tracks: list[int] | None = None, parts: list[str] | None = None,
+                                           exact: bool = False) -> str:
+                """Put the loaded state (ostinato_load_state) onto the device, whole or in part. tracks: which
+                (default all); parts: "notes" (steps, pattern length / step length, locks, nudges, fills),
+                "sound" (preset and every sound / arp / key parameter), "mix" (level, pan, mute), "globals" (the
+                device's settings) - default all. Only what differs is written; fine while the song plays.
+                exact: the device's own copy instead (every track, everything, byte for byte; the song must be
+                stopped). The device's state before is saved as "before apply" first. ostinato_undo reverts the
+                notes of a track."""
+                if (e := ready()):
+                    return e
+                bad = [p for p in parts or [] if p not in (b.states.parts if b.states else ("notes", "sound"))]
+                if bad:
+                    return f"Unknown part(s) {bad}: use " + ", ".join(b.states.parts if b.states else ("notes", "sound"))
+                try:
+                    out = await _run(session.apply_state, tracks, parts, exact)
+                except (ST.StateError, ValueError) as ex:
+                    return f"Not applied: {ex}"
+                return "Applied.\n" + "\n".join(f"  {x}" for x in out)
+
+        @tool(FILE)
+        async def ostinato_delete_state(name: str) -> str:
+            """Delete a saved state's file."""
+            try:
+                p = await _run(ST.delete, name)
+            except ST.StateError as ex:
+                return f"Not deleted: {ex}"
+            return f"Deleted {p}."
 
     # ------------------------------------------------------------------ writing
     if b.writer is not None and b.reader is not None:

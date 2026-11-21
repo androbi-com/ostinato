@@ -313,3 +313,39 @@ def test_tools_on_sloop(sloop):
     names = set(T.register(MCPServer("t"), s))
     assert {"ostinato_scales", "ostinato_parameters", "ostinato_generative_mode", "ostinato_link_info"} <= names
     assert "ostinato_mute_track" in names
+
+
+def test_session_set_sound_logs(sloop):
+    b, sim = sloop
+    s = Session(b)
+    before, now = s.set_sound(2, "WURLI")
+    assert now == "DIGITAL WURLI" and before and before != now
+    assert any(e.kind == "sound" and e.track == 2 for e in s.events_since(0))
+
+
+def test_session_level_and_pan_specs(sloop):
+    b, sim = sloop
+    s = Session(b)
+    _, a = s.set_track_level(1, "-12dB")
+    assert a.value == 88 and a.text == "-12.0dB"
+    _, a = s.set_track_level(1, "+3dB", relative=True)
+    assert a.value == 94
+    _, a = s.set_track_level(1, "50%")
+    assert a.value == 64
+    _, a = s.set_track_level(1, "off")
+    assert a.value == 0 and a.text == "OFF"
+    _, a = s.set_track_level(1, "+20db", relative=True)  # (from OFF: from -24 dB)
+    assert a.text == "-4.0dB"
+    _, a = s.set_track_level(4, "80%")
+    assert a.value == round(127 * 0.8)
+    with pytest.raises(ValueError, match="no dB scale"):
+        s.set_track_level(4, "-6dB")
+    with pytest.raises(ValueError, match="not a level"):
+        s.set_track_level(1, "loud")
+    assert s.set_track_pan(2, "L50")[1].value == -32
+    assert s.set_track_pan(2, "right")[1].value == 63
+    assert s.set_track_pan(2, "+25%")[1].value == 16
+    assert s.set_track_pan(2, "center")[1].value == 0
+    with pytest.raises(ValueError, match="not a pan"):
+        s.set_track_pan(2, "up")
+    assert sum(e.kind == "mix" for e in s.events_since(0)) == 10

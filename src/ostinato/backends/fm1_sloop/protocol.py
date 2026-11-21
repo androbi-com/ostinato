@@ -41,6 +41,8 @@ class Cmd(IntEnum):
     TRACK_CHANGED = 32  # push (v4)
     DRUM_STEP = 33
     BK_LIST = 34
+    BK_GET = 35
+    BK_PUT = 36
     LOCK_GET = 37
     LOCK_SET = 38
     MICRO_GET = 39
@@ -111,6 +113,15 @@ def v14dec(lo: int, hi: int) -> int:
     return (lo | (hi << 7)) - 8192
 
 
+def u35enc(v: int) -> list[int]:
+    """An unsigned 35-bit value: 5 x 7 bits, least significant first (offsets, lengths, CRCs)."""
+    return [(v >> (7 * k)) & 0x7F for k in range(5)]
+
+
+def u35dec(a: list[int]) -> int:
+    return sum((x & 0x7F) << (7 * k) for k, x in enumerate(a[:5]))
+
+
 def str_enc(s: str) -> list[int]:
     return [ord(c) & 0x7F for c in str(s)] + [0]
 
@@ -176,6 +187,9 @@ class Reader:
     def v(self) -> int:
         lo = self.b()
         return v14dec(lo, self.b())
+
+    def u35(self) -> int:
+        return u35dec([self.b() for _ in range(5)])
 
     def s(self) -> str:
         out = []
@@ -364,6 +378,66 @@ class req:
         return Cmd.DRUM_STEP, [i & 0x7F, *g7(d.on & 0xFFFF, 3), *g7(lv, 5), *g7(rt, 5)]
 
     @staticmethod
+    def track_mix_set(tr: int, level: int, mute: int):
+        """TRACK_MIX set (v3): a track's level (0..127) and mute, any track; on the drum track the level is the
+        global drum level (GLO > DRUMS LEVEL). Pushes nothing back."""
+        return Cmd.TRACK_MIX, [tr & 0x7F, *v14enc(max(0, min(127, level))), 1 if mute else 0]
+
+    @staticmethod
+    def set_global(gid: int, v: int):
+        """SET scope 1: a global (G_*). (Scope 0 would act on the selected track: TRACK_PARAM instead.)"""
+        return Cmd.SET, [1, gid & 0x7F, *v14enc(v)]
+
+    @staticmethod
+    def lock_set(tr: int, step: int, param: int, v: int | None = None):
+        """LOCK_SET (v7): one lock; without a value the lock on (step, param) is removed. 24 a track."""
+        return Cmd.LOCK_SET, [tr & 0x7F, step & 0x7F, param & 0x7F, *([] if v is None else v14enc(v))]
+
+    @staticmethod
+    def micro_set(tr: int, step: int, nudge: int):
+        """MICRO_SET (v7): one step's nudge, -32..31."""
+        return Cmd.MICRO_SET, [tr & 0x7F, step & 0x7F, max(-32, min(31, nudge)) + 64]
+
+    @staticmethod
+    def fill_set(tr: int, step: int, cond: int):
+        """FILL_SET (v8): one step's fill condition (0 normal, 1 fill only, 2 no fill)."""
+        return Cmd.FILL_SET, [tr & 0x7F, step & 0x7F, cond & 3 if cond in (0, 1, 2) else 0]
+
+    @staticmethod
+    def bk_list():
+        """BK_LIST (v6): the backup objects; also snapshots the working project for BK_GET."""
+        return Cmd.BK_LIST, []
+
+    @staticmethod
+    def bk_get(obj: int, offset: int, count: int):
+        """BK_GET (v6): up to 256 bytes of object `obj` from `offset` (after BK_LIST)."""
+        count = max(1, min(256, count))
+        return Cmd.BK_GET, [obj & 0x7F, *u35enc(offset), count & 0x7F, (count >> 7) & 0x7F]
+
+    @staticmethod
+    def bk_put_begin(obj: int, length: int, crc: int):
+        return Cmd.BK_PUT, [0, obj & 0x7F, *u35enc(length), *u35enc(crc)]
+
+    @staticmethod
+    def bk_put_data(obj: int, offset: int, data: bytes):
+        return Cmd.BK_PUT, [1, obj & 0x7F, *u35enc(offset), *pack7(data)]
+
+    @staticmethod
+    def bk_put_commit(obj: int):
+        """Object 0 (the working project) is loaded at once: the song must be stopped (rc 3)."""
+        return Cmd.BK_PUT, [2, obj & 0x7F]
+
+    @staticmethod
+    def bk_put_abort(obj: int):
+        return Cmd.BK_PUT, [3, obj & 0x7F]
+
+    @staticmethod
+    def preset(engine: int, preset: int):
+        """PRESET: load a factory preset (engine, preset) onto the SELECTED track: its sound, sends and arp; the
+        pattern, mix and key stay. RAM only; RELOAD follows (while WATCH is on). Nothing on the drum track."""
+        return Cmd.PRESET, [engine & 0x7F, preset & 0x7F]
+
+    @staticmethod
     def track_param_set(tr: int, pid: int, v: int):
         return Cmd.TRACK_PARAM, [tr & 0x7F, pid & 0x7F, *v14enc(v)]
 
@@ -393,6 +467,10 @@ def reply_matches(cmd: int, args: list[int], a: list[int]) -> bool:
         return eq(0, 1)
     if cmd == Cmd.LIVE:
         return eq(0)
+    if cmd == Cmd.BK_GET:
+        return eq(0)
+    if cmd == Cmd.BK_PUT:
+        return eq(0, 1)
     return True
 
 
@@ -499,6 +577,53 @@ def parse_track_dump(a: list[int], info: Info) -> dict:
     o = {"track": r.b(), "engine": r.b(), "preset": r.b()}
     o["p"] = [r.v() for _ in range(info.pcount)]
     return o
+
+
+def parse_lock_set(a: list[int]) -> dict:
+    """-> {track, step, param, rc (0 ok, 1 range, 2 not lockable, 3 no free slot), has, value}."""
+    r = Reader(a)
+    o = {"track": r.b(), "step": r.b(), "param": r.b(), "rc": r.b()}
+    o["has"] = r.b() if r.left else 0
+    o["value"] = r.v() if r.left >= 2 else 0
+    return o
+
+
+BK_RC = {0: "ok", 1: "bad arguments", 2: "not a valid object", 3: "stop the song first", 4: "flash error",
+         5: "no snapshot / begin (expired)"}
+
+
+def parse_bk_list(a: list[int]) -> tuple[int, list[dict]]:
+    """-> (rc, [{id, length, crc}])."""
+    r = Reader(a)
+    rc = r.b()
+    if rc:
+        return rc, []
+    n = r.b()
+    return rc, [{"id": r.b(), "length": r.u35(), "crc": r.u35()} for _ in range(n)]
+
+
+def parse_bk_get(a: list[int]) -> dict:
+    """-> {id, rc, offset, count, data (bytes)}."""
+    r = Reader(a)
+    o = {"id": r.b(), "rc": r.b()}
+    if o["rc"] or r.left < 7:
+        o.update(offset=0, count=0, data=b"")
+        return o
+    o["offset"] = r.u35()
+    lo = r.b()
+    o["count"] = lo | (r.b() << 7)
+    o["data"] = unpack7(a[r.i:])[: o["count"]]
+    return o
+
+
+def parse_bk_put(a: list[int]) -> dict:
+    r = Reader(a)
+    return {"op": r.b(), "id": r.b(), "rc": r.b() if r.left else 0}
+
+
+def parse_track_mix(a: list[int]) -> dict:
+    r = Reader(a)
+    return {"track": r.b(), "level": r.v(), "mute": r.b()}
 
 
 def parse_track_param(a: list[int]) -> tuple[int, int, int]:

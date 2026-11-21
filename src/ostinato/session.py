@@ -13,7 +13,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
-from .model import DeviceEvent, Grid, Key, Sequence, TrackInfo, WriteReport
+from .model import DeviceEvent, Grid, Key, MixValue, Sequence, TrackInfo, WriteReport
 
 MAX_UNDO = 30
 
@@ -33,15 +33,63 @@ class NotSupported(RuntimeError):
     pass
 
 
+_NUM = r"([+-]?\d+(?:[.,]\d+)?)"
+
+
+def _mix_target(cur: MixValue, spec, relative: bool, what: str) -> int:
+    """A level / pan as the user says it -> a value on the device's scale (clamped)."""
+    import re
+
+    clamp = lambda v: max(cur.min, min(cur.max, int(round(v))))
+    if isinstance(spec, bool):
+        raise ValueError(f"not a {what}: {spec!r}")
+    if isinstance(spec, (int, float)):
+        return clamp(cur.value + spec if relative else spec)
+    s = str(spec).strip().lower().replace(" ", "")
+    num = lambda x: float(x.replace(",", "."))
+    if what == "pan":
+        side = max(abs(cur.min), abs(cur.max))  # 100% of one side
+        if s in ("c", "center", "centre", "mid", "middle"):
+            return clamp(0)
+        if s in ("l", "left", "r", "right"):
+            return clamp(-side if s[0] == "l" else side)
+        if m := re.fullmatch(r"([lr])(\d+(?:[.,]\d+)?)%?", s):
+            pct = num(m.group(2))
+            return clamp((-pct if m.group(1) == "l" else pct) * side / 100)
+        if m := re.fullmatch(_NUM + "%", s):
+            return clamp(num(m.group(1)) * side / 100)
+        if m := re.fullmatch(_NUM, s):
+            return clamp(num(m.group(1)))
+        raise ValueError(f"not a pan: {spec!r} (e.g. center, L30, R50, -30%, +50%)")
+    if s in ("off", "mute", "silent") and not relative:
+        return clamp(cur.min)
+    if m := re.fullmatch(_NUM + "db", s):
+        if cur.db_zero is None or not cur.db_step:
+            raise ValueError("this track's level has no dB scale: give a percentage (e.g. 75%)")
+        d = num(m.group(1))
+        if relative:
+            base = cur.value if cur.value > cur.min else cur.db_zero - 24 / cur.db_step  # (from OFF: from -24 dB)
+            return clamp(base + d / cur.db_step)
+        return clamp(cur.db_zero + d / cur.db_step)
+    if m := re.fullmatch(_NUM + "%", s):
+        v = num(m.group(1)) * (cur.max - cur.min) / 100
+        return clamp(cur.value + v if relative else cur.min + v)
+    if m := re.fullmatch(_NUM, s):
+        return clamp(cur.value + num(m.group(1)) if relative else num(m.group(1)))
+    raise ValueError(f"not a level: {spec!r} (e.g. -12dB, 75%, off; relative: +3dB, -10%)")
+
+
 class Session:
     def __init__(self, backend):
         self.backend = backend
         self.history: dict[int, list[tuple[str, Sequence]]] = {}
         self.log_entries: deque[LogEntry] = deque(maxlen=500)
         self.version = 0
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()  # writes and undo history
+        self._log_lock = threading.Lock()  # the log only: the device's threads log while holding its own lock
         if backend.changes is not None:
             backend.changes.subscribe(self._on_device)
+        self.loaded = None  # a saved state read from its file (ostinato.states.SavedState)
         self.engine = None
         if backend.reader is not None and backend.writer is not None:
             from .generative.engine import GenerativeEngine
@@ -50,7 +98,7 @@ class Session:
 
     # ---------------------------------------------------------- the log
     def log(self, kind: str, track: int | None, text: str, detail: dict | None = None, source: str = "server") -> None:
-        with self._lock:
+        with self._log_lock:
             self.version += 1
             self.log_entries.append(LogEntry(self.version, time.time(), kind, track, text, source, detail or {}))
 
@@ -58,7 +106,7 @@ class Session:
         self.log(ev.kind, ev.track, ev.text, ev.detail, source="device")
 
     def events_since(self, version: int) -> list[LogEntry]:
-        with self._lock:
+        with self._log_lock:
             return [e for e in self.log_entries if e.version > version]
 
     # ---------------------------------------------------------- reading
@@ -112,6 +160,58 @@ class Session:
         actual = self.backend.mixer.set_muted(track, muted)
         self.log("mute", track, f"track {'muted' if actual else 'unmuted'}")
         return actual
+
+    def _mixer(self, track: int):
+        if self.backend.mixer is None:
+            raise NotSupported("this device has no track mixer")
+        self.track_info(track)
+        return self.backend.mixer
+
+    def track_level(self, track: int) -> MixValue:
+        return self._mixer(track).level(track)
+
+    def track_pan(self, track: int) -> MixValue | None:
+        return self._mixer(track).pan(track)
+
+    def set_track_level(self, track: int, level: str | int | float, relative: bool = False,
+                        source: str = "server") -> tuple[MixValue, MixValue]:
+        """level: "-12dB" (where 0 dB is; on a scale in dB), "75%" (of the range), "off", or a number on the
+        device's own scale. relative: change the level by that much ("+3dB", "-10%", "-5").
+        Clamped to the range. -> (before, after)."""
+        m = self._mixer(track)
+        before = m.level(track)
+        target = _mix_target(before, level, relative, "level")
+        after = m.set_level(track, target)
+        self.log("mix", track, f"level {after.text} (was {before.text})", source=source)
+        return before, after
+
+    def set_track_pan(self, track: int, pan: str | int | float, source: str = "server") -> tuple[MixValue, MixValue]:
+        """pan: "center", "L30" / "R50" (percent of one side), "left" / "right", "-30%" (left) / "+50%" (right), or
+        a number on the device's own scale. -> (before, after)."""
+        m = self._mixer(track)
+        before = m.pan(track)
+        if before is None:
+            raise ValueError(f"track {track} has no pan")
+        target = _mix_target(before, pan, False, "pan")
+        after = m.set_pan(track, target)
+        self.log("mix", track, f"pan {after.text} (was {before.text})", source=source)
+        return before, after
+
+    def sounds(self, track: int) -> list[tuple[str, str]]:
+        if self.backend.sounds is None:
+            raise NotSupported("this device cannot change a track's sound")
+        self.track_info(track)
+        return self.backend.sounds.sounds(track)
+
+    def set_sound(self, track: int, name: str, group: str | None = None) -> tuple[str | None, str]:
+        """-> (the sound before, the sound now)."""
+        if self.backend.sounds is None:
+            raise NotSupported("this device cannot change a track's sound")
+        self.track_info(track)
+        before = self.instrument(track)
+        now = self.backend.sounds.set_sound(track, name, group)
+        self.log("sound", track, f"sound {now}" + (f" (was {before})" if before else ""))
+        return before, now
 
     # ---------------------------------------------------------- writing, undo
     def write(self, track: int, seq: Sequence, label: str, source: str = "server", key: Key | None = None,
@@ -194,3 +294,130 @@ class Session:
 
     def undo_depth(self, track: int) -> int:
         return len(self.history.get(track, []))
+
+    # ---------------------------------------------------------- saved states
+    def save_state(self, name: str, note: str | None = None, exact: bool = True,
+                   overwrite: bool = True) -> tuple["object", list[str]]:
+        """Everything from the device into a file. -> (the SavedState, warnings)."""
+        from . import states as S
+
+        if self.backend.reader is None:
+            raise NotSupported("this device cannot be read")
+        path = S.path_for(name)
+        if path.exists() and not overwrite:
+            raise S.StateError(f"a state {name!r} exists (overwrite replaces it)")
+        with self._lock:
+            data, warnings = S.build(self, path.stem if path.parent == S.states_dir() else name, note, exact)
+        S.write(path, data)
+        self.log("state", None, f"saved state {data['name']!r}" + (" (exact copy)" if data.get("exact") else ""))
+        return S.read(str(path)), warnings
+
+    def load_state(self, name: str):
+        """Read a state file into the session (the device is not touched). -> the SavedState."""
+        from . import states as S
+
+        self.loaded = S.read(name)
+        self.log("state", None, f"loaded state {self.loaded.name!r} (not applied)")
+        return self.loaded
+
+    def compare_state(self) -> list[str]:
+        """What differs between the loaded state and the device, track by track."""
+        from . import states as S
+
+        s = self.loaded
+        if s is None:
+            raise S.StateError("no state is loaded (load one first)")
+        out = []
+        for t in s.data.get("tracks", []):
+            n = t["track"]
+            try:
+                self.track_info(n)
+            except ValueError:
+                out.append(f"track {n}: not on this device")
+                continue
+            diffs = []
+            if t.get("instrument") and t["instrument"] != self.instrument(n):
+                diffs.append(f"sound {self.instrument(n)} -> {t['instrument']}")
+            if self.backend.mixer:
+                lv, pn, mu = self.track_level(n), self.track_pan(n), self.track_muted(n)
+                if t.get("level") and t["level"] != lv.text:
+                    diffs.append(f"level {lv.text} -> {t['level']}")
+                if t.get("pan") and pn and t["pan"] != pn.text:
+                    diffs.append(f"pan {pn.text} -> {t['pan']}")
+                if t.get("muted") is not None and t["muted"] != mu:
+                    diffs.append("muted" if t["muted"] else "unmuted")
+            seq = s.sequences.get(n)
+            if seq is not None and self.backend.reader is not None and not S.same_notes(seq, self.read(n)):
+                cur = self.read(n)
+                diffs.append(f"notes differ ({len(cur.sounding())} now, {len(seq.sounding())} saved)")
+            out.append(f"track {n}: " + ("; ".join(diffs) if diffs else "as saved"))
+        return out
+
+    def apply_state(self, tracks: list[int] | None = None, parts: list[str] | None = None, exact: bool = False,
+                    backup: bool = True) -> list[str]:
+        """Put the loaded state onto the device: `tracks` (all), `parts` (all the backend knows: notes, sound, mix,
+        globals). exact: the device's own copy of its project, whole (the song must be stopped).
+        Before, the device's state is saved as "before apply" (backup). Note changes can be undone per track.
+        -> what was done."""
+        from . import states as S
+
+        s = self.loaded
+        if s is None:
+            raise S.StateError("no state is loaded (load one first)")
+        b = self.backend
+        all_tracks = [t.track for t in self.tracks()]
+        tracks = sorted(set(tracks or all_tracks))
+        for t in tracks:
+            self.track_info(t)
+            if self.engine is not None and t in self.engine.armed:
+                raise ValueError(f"generative mode is armed on track {t}: disarm it first")
+        dev = (s.data.get("device") or {}).get("backend")
+        if dev and dev != b.name:
+            raise S.StateError(f"the state was saved from another kind of device ({dev}), this is {b.name}")
+        out: list[str] = []
+        if backup:
+            _, w = self.save_state("before apply", "the device before the last apply", exact=exact)
+            out.append("the device's state before is saved as 'before apply'" + (f" ({'; '.join(w)})" if w else ""))
+        with self._lock:
+            before = {t: self.read(t) for t in all_tracks} if b.reader else {}
+            if exact:
+                blob = s.exact
+                if blob is None:
+                    raise S.StateError(f"the state {s.name!r} has no exact copy")
+                if not (b.states and b.states.exact_supported()):
+                    raise NotSupported("this device cannot take an exact copy")
+                if set(tracks) != set(all_tracks) or (parts and set(parts) != set(b.states.parts)):
+                    raise ValueError("the exact copy goes back whole: every track, every part")
+                b.states.apply_exact(blob)
+                out.append(f"exact copy of {s.name!r} loaded into the device")
+            else:
+                parts = list(parts or (b.states.parts if b.states else ("notes", "sound")))
+                why = b.states.compatible(s.data["backend"]) if b.states and s.data.get("backend") else "no data"
+                if b.states and why is None:
+                    out += b.states.apply(s.data["backend"], tracks, parts)
+                else:  # another device / firmware: the generic part (notes, sound by name)
+                    out.append(f"(the device's own data cannot be used: {why}; the notes and sounds by name)")
+                    for t in tracks:
+                        td = s.track(t)
+                        if "notes" in parts and t in s.sequences and b.writer:
+                            seq = s.sequences[t]
+                            rep = self.backend.writer.write(t, seq, f"state {s.name}")
+                            out.append(f"track {t}: {rep.changed} step(s)")
+                        if "sound" in parts and b.sounds and td.get("instrument"):
+                            inst = td["instrument"]
+                            group, _, name = inst.partition(" ")
+                            if inst.upper().startswith("DRUMS KIT "):
+                                group, name = None, inst[len("DRUMS kit "):]
+                            try:
+                                self.set_sound(t, name or inst, group if name else None)
+                            except ValueError as e:
+                                out.append(f"track {t}: sound not set ({e})")
+            # the notes can be undone per track (as any write)
+            for t, seq in before.items():
+                if not S.same_notes(seq, self.read(t)):
+                    h = self.history.setdefault(t, [])
+                    h.append((f"state {s.name}", seq))
+                    del h[:-MAX_UNDO]
+        self.log("state", None, f"applied state {s.name!r}" + (" (exact)" if exact else
+                 f" to track(s) {', '.join(map(str, tracks))}: {', '.join(parts)}"))
+        return out

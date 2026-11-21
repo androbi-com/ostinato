@@ -119,7 +119,7 @@ function buildTracks(st) {
     const card = h("article", { class: "track " + t.kind, id: "track-" + t.track },
       h("div", { class: "track-head" },
         h("span", { class: "track-num", text: t.track }),
-        h("span", { class: "track-title", text: t.instrument || t.name }),
+        can("sounds") ? soundSelect(t) : h("span", { class: "track-title", text: t.instrument || t.name }),
         h("span", { class: "tag", text: t.kind }),
         h("span", { class: "tag key", "data-role": "key", hidden: !t.key, text: t.key || "" }),
         h("span", { class: "tag", "data-role": "grid" }),
@@ -134,6 +134,36 @@ function buildTracks(st) {
     box.append(card);
   }
   updateTrackChrome(st);
+}
+
+// the track's sound as a menu (presets grouped by engine; kits on the drum track); the list is fetched once per
+// kind of track
+function soundSelect(t) {
+  const sel = h("select", { class: "track-title sound", "aria-label": `Sound of track ${t.track}`,
+    title: "Choose this track's sound" }, h("option", { value: "", text: t.instrument || t.name, selected: true }));
+  const cacheKey = t.kind === "drums" ? "drums" : "synth";
+  S.sounds = S.sounds || {};
+  const fill = list => {
+    const groups = {};
+    for (const x of list) (groups[x.group] = groups[x.group] || []).push(x.name);
+    const cur = t.instrument || "";
+    let found = false;
+    const opts = Object.entries(groups).map(([g, names]) => h("optgroup", { label: g },
+      ...names.map(n => {
+        const on = !found && (cur === `${g} ${n}` || (g === "KIT" && cur.endsWith(` ${n}`)));
+        found = found || on;
+        return h("option", { value: JSON.stringify([g, n]), selected: on, text: n });
+      })));
+    sel.replaceChildren(...(found ? [] : [h("option", { value: "", text: cur || t.name, selected: true })]), ...opts);
+  };
+  (S.sounds[cacheKey] ||= api(`/api/ui/track/${t.track}/sounds`).then(r => r.sounds))
+    .then(fill).catch(() => { delete S.sounds[cacheKey]; });
+  sel.onchange = async () => {
+    if (!sel.value) return;
+    const [group, name] = JSON.parse(sel.value);
+    await act(`/api/ui/track/${t.track}/sound`, { name, group }, "Sound");
+  };
+  return sel;
 }
 
 function setView(track, view) {
@@ -273,6 +303,7 @@ function updateTrackChrome(st) {
     const algos = st.algorithms.filter(a => a.kinds.includes(t.kind === "chords" ? "chords" : t.kind));
     const key = JSON.stringify([
       can("writer"), can("controls"), can("mixer"), t.kind, t.undo, t.muted,
+      t.level && t.level.value, t.pan && t.pan.value,
       armed ? [armed.algorithm, armed.control, armed.kind, armed.runs, armed.depth, armed.last] : null,
       algos.map(a => [a.name, a.description, a.kinds]),
       st.controls.map(c => [c.name, c.kind, c.description]),
@@ -284,6 +315,28 @@ function updateTrackChrome(st) {
   }
 }
 
+// the mixer: a slider on the device's own scale; it is sent when let go (not while dragging)
+function levelText(m, v) {
+  if (m.db_zero == null || !m.db_step) return String(v);
+  return v <= m.min ? "OFF" : `${((v - m.db_zero) * m.db_step).toFixed(1)}dB`;
+}
+
+function panText(m, v) {
+  const pct = Math.round((v * 100) / Math.max(Math.abs(m.min), Math.abs(m.max)));
+  return pct === 0 ? "C" : pct < 0 ? `L${-pct}` : `R${pct}`;
+}
+
+function mixSlider(t, what, label, fmt) {
+  const m = t[what];
+  const val = h("span", { class: "mix-value", text: fmt(m, m.value) });
+  const input = h("input", { type: "range", min: m.min, max: m.max, step: 1, value: m.value,
+    "aria-label": `${label} of track ${t.track}`, title: `${label}: ${m.text}` + (what === "pan" ? " (double-click: center)" : ""),
+    oninput: e => (val.textContent = fmt(m, +e.target.value)),
+    onchange: e => act(`/api/ui/track/${t.track}/mix`, { [what]: +e.target.value }, label),
+    ondblclick: e => { if (what === "pan") { e.target.value = 0; e.target.dispatchEvent(new Event("change")); } } });
+  return h("label", { class: "mix " + what }, h("span", { class: "mix-label", text: label }), input, val);
+}
+
 function trackActions(t, armed, st) {
   const out = [];
   if (can("mixer")) {
@@ -293,6 +346,8 @@ function trackActions(t, armed, st) {
       title: t.muted ? "Unmute this track" : "Mute this track",
       onclick: () => act(`/api/ui/track/${t.track}/mute`, { muted: !t.muted }, t.muted ? "Unmute" : "Mute"),
     }, t.muted ? "Unmute" : "Mute"));
+    if (t.level) out.push(mixSlider(t, "level", "Level", levelText));
+    if (t.pan) out.push(mixSlider(t, "pan", "Pan", panText));
   }
   if (!can("writer")) {
     if (!out.length) return [h("span", { class: "empty", text: "This device cannot be written to." })];
@@ -365,6 +420,77 @@ async function loadLog() {
     while (ol.children.length > 300) ol.lastChild.remove();
     S.lastLog = r.version;
   } catch (e) { /* (shown by the header) */ }
+}
+
+// ---------------------------------------------------------------- saved states
+async function loadStates() {
+  const box = $("#states");
+  let r;
+  try { r = await api("/api/ui/states"); } catch (e) { box.replaceChildren(h("div", { class: "notice", text: e.message })); return; }
+  const name = h("input", { type: "text", placeholder: "name, e.g. before gig", "aria-label": "State name" });
+  const note = h("input", { type: "text", placeholder: "note (optional)", "aria-label": "Note", class: "wide" });
+  const exact = h("input", { type: "checkbox", checked: true });
+  const save = async () => {
+    const n = name.value.trim();
+    if (!n) { toast("Give the state a name", true); return; }
+    if (r.states.some(x => x.name === n) && !confirm(`Replace the saved state "${n}"?`)) return;
+    const res = await act("/api/ui/states/save", { name: n, note: note.value, exact: exact.checked, overwrite: true }, "Save");
+    if (res) loadStates();
+  };
+  const saveCard = h("div", { class: "card states-save" },
+    h("h3", { text: "Save the device now" }),
+    h("div", { class: "row" }, name, note,
+      h("label", { class: "check", title: "Also keep the device's own copy of its project (put back byte for byte)" },
+        exact, " exact copy"),
+      h("button", { class: "primary", onclick: save }, "Save")));
+  const row = x => h("tr", {},
+    h("td", {}, h("strong", { text: x.name }), x.exact ? h("span", { class: "tag", text: "exact" }) : null),
+    h("td", { text: x.saved_at || "" }),
+    h("td", { class: "small", text: x.tracks.join(" · ") }),
+    h("td", { text: x.note }),
+    h("td", { class: "actions" },
+      h("button", { class: "small", onclick: async () => {
+        if (await act("/api/ui/states/load", { name: x.name }, "Load")) loadStates(); } }, "Load"),
+      h("button", { class: "small ghost", onclick: async () => {
+        if (confirm(`Delete the saved state "${x.name}"? This removes its file.`) &&
+            await act("/api/ui/states/delete", { name: x.name }, "Delete")) loadStates(); } }, "Delete")));
+  const list = r.states.length
+    ? h("table", { class: "states-list" },
+        h("thead", {}, h("tr", {}, ...["Name", "Saved", "Tracks", "Note", ""].map(x => h("th", { text: x })))),
+        h("tbody", {}, ...r.states.map(row)))
+    : h("div", { class: "empty", text: `No saved states yet (they go to ${r.dir}).` });
+  box.replaceChildren(saveCard, h("h3", { text: "Saved states" }), list, loadedCard(r.loaded));
+}
+
+function loadedCard(L) {
+  if (!L) return h("div");
+  const trackBoxes = L.tracks.map(t => h("input", { type: "checkbox", checked: true, value: t }));
+  const partBoxes = L.parts.map(p => h("input", { type: "checkbox", checked: true, value: p }));
+  const exact = h("input", { type: "checkbox", disabled: !L.exact });
+  exact.onchange = () => [...trackBoxes, ...partBoxes].forEach(b => (b.disabled = exact.checked));
+  const apply = async () => {
+    const tracks = trackBoxes.filter(b => b.checked).map(b => +b.value);
+    const parts = partBoxes.filter(b => b.checked).map(b => b.value);
+    if (!exact.checked && (!tracks.length || !parts.length)) { toast("Choose at least one track and one part", true); return; }
+    const what = exact.checked ? "the exact copy (every track, everything; the song must be stopped)"
+      : `track(s) ${tracks.join(", ")}: ${parts.join(", ")}`;
+    if (!confirm(`Put "${L.name}" onto the device: ${what}?\nThe device's state now is saved as "before apply" first.`)) return;
+    if (await act("/api/ui/states/apply", exact.checked ? { exact: true } : { tracks, parts }, "Apply")) loadStates();
+  };
+  return h("div", { class: "card states-loaded" },
+    h("h3", { text: `Loaded: ${L.name}` }),
+    h("pre", { class: "summary", text: L.summary }),
+    L.compare ? h("div", {}, h("h4", { text: "Compared with the device now" }),
+      h("ul", { class: "compare" }, ...L.compare.map(x => h("li", { class: x.endsWith("as saved") ? "same" : "diff", text: x }))))
+      : null,
+    h("div", { class: "row" }, h("span", { class: "mix-label", text: "Tracks" }),
+      ...trackBoxes.map(b => h("label", { class: "check" }, b, ` ${b.value}`))),
+    h("div", { class: "row" }, h("span", { class: "mix-label", text: "Parts" }),
+      ...partBoxes.map(b => h("label", { class: "check" }, b, ` ${b.value}`))),
+    h("div", { class: "row" },
+      h("label", { class: "check", title: L.exact ? "Put back the device's own copy, byte for byte" : "This state has no exact copy" },
+        exact, " exact copy instead"),
+      h("button", { class: "primary", onclick: apply }, "Apply to the device")));
 }
 
 // ---------------------------------------------------------------- settings
@@ -552,6 +678,7 @@ document.querySelectorAll(".tabs button").forEach(b => b.addEventListener("click
   document.querySelectorAll(".tabs button").forEach(x => x.setAttribute("aria-selected", x === b));
   document.querySelectorAll(".tab").forEach(t => (t.hidden = t.id !== "tab-" + b.dataset.tab));
   if (b.dataset.tab === "settings" && !S.setupsShown) { S.setupsShown = true; loadSetups(); }
+  if (b.dataset.tab === "states") loadStates();
 }));
 $("#btn-release").onclick = () => act("/api/ui/disconnect", {}, "Release");
 $("#btn-connect").onclick = () => act("/api/ui/connect", {}, "Reconnect");

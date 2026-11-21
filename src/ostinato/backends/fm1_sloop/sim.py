@@ -119,6 +119,74 @@ class SimFM1:
         g7 = lambda x, n: [(x >> (7 * k)) & 0x7F for k in range(n)]
         return [d.index, *g7(d.on & 0xFFFF, 3), *g7(lv, 5), *g7(rt, 5)]
 
+    # ---- the working project as one object (the simulator's own format: JSON; the firmware's is a project_t)
+    playing = False  # (BK_PUT of the working project answers rc 3 while the song plays)
+
+    def _project_blob(self) -> bytes:
+        import dataclasses
+
+        tracks = [{**{k: v for k, v in t.items() if k not in ("steps", "locks")},
+                   "steps": [dataclasses.asdict(s) for s in t["steps"]],
+                   "locks": [dataclasses.asdict(l) for l in t["locks"]]} for t in self.tracks]
+        return json.dumps({"sel": self.sel, "g": self.g, "tracks": tracks,
+                           "dsteps": [dataclasses.asdict(d) for d in self.dsteps]}).encode()
+
+    def _load_project_blob(self, b: bytes) -> None:
+        d = json.loads(b)
+        self.sel, self.g = d["sel"], d["g"]
+        for t, x in zip(self.tracks, d["tracks"]):
+            t.update({k: v for k, v in x.items() if k not in ("steps", "locks")})
+            t["steps"] = [P.Step(**s) for s in x["steps"]]
+            t["locks"] = [P.Lock(**l) for l in x["locks"]]
+        self.dsteps = [P.DrumStep(**s) for s in d["dsteps"]]
+
+    def _bk_put(self, a: list[int]) -> list[int]:
+        import zlib
+
+        op, obj = a[0], a[1]
+        if obj != 0:
+            return [op, obj, 1]
+        if op == 0:
+            self._put = {"len": P.u35dec(a[2:7]), "crc": P.u35dec(a[7:12]), "data": bytearray()}
+            return [op, obj, 0]
+        put = getattr(self, "_put", None)
+        if put is None:
+            return [op, obj, 5]
+        if op == 1:
+            off = P.u35dec(a[2:7])
+            data = P.unpack7(a[7:])
+            if off != len(put["data"]):
+                return [op, obj, 1]
+            put["data"] += data
+            return [op, obj, 0]
+        if op == 3:
+            self._put = None
+            return [op, obj, 0]
+        if op == 2:
+            b = bytes(put["data"][: put["len"]])
+            if len(b) != put["len"] or (zlib.crc32(b) & 0xFFFFFFFF) != put["crc"]:
+                return [op, obj, 2]
+            if self.playing:
+                return [op, obj, 3]
+            self._load_project_blob(b)
+            self._put = None
+            self.writes.append((Cmd.BK_PUT, [2, 0]))
+            return [op, obj, 0]
+        return [op, obj, 1]
+
+    def _global_id(self, label: str) -> int | None:
+        for pid in range(self.info.gcount):
+            r = self.lookup.get((Cmd.DESC, (1, pid)))
+            if r and P.parse_desc(r).label == label:
+                return pid
+        return None
+
+    def _param_id(self, t: int, label: str) -> int | None:
+        for pid, r in enumerate(self.desc_by_track[t][: self.info.pcount]):
+            if r and P.parse_desc(r).label == label:
+                return pid
+        return None
+
     def _engine_byte(self, t: int) -> int:
         return self.tracks[t]["engine"]
 
@@ -138,6 +206,90 @@ class SimFM1:
             return self.lookup.get((Cmd.DESC, (1, pid)))
         if cmd in (Cmd.NAMES, Cmd.PROJECT):
             return self.lookup.get((cmd, tuple(a)))
+        if cmd == Cmd.SET and len(a) == 4:
+            scope, pid, v = a[0], a[1], P.v14dec(a[2], a[3])
+            if scope == 1 and pid < len(self.g):
+                dd = self.lookup.get((Cmd.DESC, (1, pid)))
+                d = P.parse_desc(dd) if dd else None
+                if d and d.max > d.min:
+                    v = max(d.min, min(d.max, v))
+                self.g[pid] = v
+                if pid == self._global_id("LVL"):
+                    for t in self.tracks:
+                        if t["engine"] >= info.nengines:
+                            t["level"] = v
+            elif scope == 0 and pid < info.pcount:
+                self.tracks[self.sel]["p"][pid] = v
+            self.writes.append((cmd, list(a)))
+            return [scope, pid, *v14enc(v)]
+        if cmd == Cmd.LOCK_SET and len(a) >= 3:
+            tr, i, pid = a[0], a[1], a[2]
+            ls = self.tracks[tr]["locks"]
+            old = next((l for l in ls if (l.step, l.param) == (i, pid)), None)
+            if i >= info.nstep or pid >= info.pcount:
+                return [tr, i, pid, 1, 0, 0, 64]
+            self.writes.append((cmd, list(a)))
+            if len(a) < 5:
+                if old:
+                    ls.remove(old)
+                return [tr, i, pid, 0, 0, 0, 64]
+            v = P.v14dec(a[3], a[4])
+            if old:
+                old.value = v
+            elif len(ls) >= 24:
+                return [tr, i, pid, 3, 0, 0, 64]
+            else:
+                ls.append(P.Lock(i, pid, v))
+            return [tr, i, pid, 0, 1, *v14enc(v)]
+        if cmd == Cmd.MICRO_SET and len(a) == 3:
+            v = max(-32, min(31, a[2] - 64))
+            self.tracks[a[0]]["micro"][a[1]] = v
+            self.writes.append((cmd, list(a)))
+            return [a[0], a[1], v + 64]
+        if cmd == Cmd.FILL_SET and len(a) == 3:
+            raw = self.tracks[a[0]]["fill"]
+            i, c = a[1], a[2] if a[2] in (0, 1, 2) else 0
+            raw[i >> 2] = (raw[i >> 2] & ~(3 << (2 * (i & 3)))) | (c << (2 * (i & 3)))
+            self.writes.append((cmd, list(a)))
+            return [a[0], i, c]
+        if cmd == Cmd.BK_LIST:
+            self._bk_snapshot = self._project_blob()
+            import zlib
+
+            b = self._bk_snapshot
+            return [0, 1, 0, *P.u35enc(len(b)), *P.u35enc(zlib.crc32(b) & 0xFFFFFFFF)]
+        if cmd == Cmd.BK_GET and len(a) == 8:
+            obj, off, n = a[0], P.u35dec(a[1:6]), a[6] | (a[7] << 7)
+            snap = getattr(self, "_bk_snapshot", None)
+            if obj != 0 or snap is None:
+                return [obj, 5]
+            chunk = snap[off:off + n]
+            return [obj, 0, *P.u35enc(off), len(chunk) & 0x7F, len(chunk) >> 7, *P.pack7(chunk)]
+        if cmd == Cmd.BK_PUT and len(a) >= 2:
+            return self._bk_put(a)
+        if cmd == Cmd.TRACK_MIX and a and a[0] < info.ntrk:  # read (track) / set (track, level v14, mute)
+            t = self.tracks[a[0]]
+            if len(a) >= 4:
+                v = max(0, min(127, P.v14dec(a[1], a[2])))
+                t["level"], t["mute"] = v, 1 if a[3] else 0
+                if t["engine"] >= info.nengines:  # the drum track: the global drum level
+                    gid = self._global_id("LVL")
+                    if gid is not None:
+                        self.g[gid] = v
+                else:
+                    t["p"][0] = v
+                mid = self._param_id(a[0], "MUTE")
+                if mid is not None:
+                    t["p"][mid] = t["mute"]
+                self.writes.append((cmd, list(a)))
+            return [a[0], *v14enc(t["level"]), t["mute"]]
+        if cmd == Cmd.PRESET and len(a) == 2:  # onto the selected track; nothing on the drum track
+            t = self.tracks[self.sel]
+            if t["engine"] < info.nengines and a[0] < info.nengines:
+                t["engine"], t["preset"] = a[0], a[1]
+                self.writes.append((cmd, list(a)))
+                self._push(Cmd.RELOAD, [t["engine"], t["preset"], self.sel])
+            return [t["engine"], t["preset"]]
         if cmd == Cmd.TRACK:
             if a:
                 if a[0] >= info.ntrk:

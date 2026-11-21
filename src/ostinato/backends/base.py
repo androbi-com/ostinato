@@ -16,7 +16,9 @@ part names, without `keys` no key signature, without `writer` the writing tools 
 | changes       | ChangeFeed       | notices of edits made on the device                        |
 | parameters    | ParameterInfo    | named parameters with their values                         |
 | controls      | ControlInputs    | knobs / buttons usable as triggers (generative mode)       |
-| mixer         | TrackMixer       | read / set a track's mute state                            |
+| mixer         | TrackMixer       | read / set a track's mute state, level and pan             |
+| sounds        | SoundSelector    | the sounds a track can take (presets, kits) and set one    |
+| states        | StateStore       | the device's whole state as data (saved states), and back  |
 
 A backend that can be found on the MIDI ports (a hardware device) also has a `probe`; one that cannot (e.g. a DAW)
 is chosen by configuration. Extra tools only one backend has come from `extra_tools()`.
@@ -27,7 +29,7 @@ import re
 from typing import Any, Callable, ClassVar, Protocol
 
 from ..midi import Transport
-from ..model import ControlEvent, DeviceEvent, Key, Sequence, TrackInfo, WriteLimits, WriteReport
+from ..model import ControlEvent, DeviceEvent, Key, MixValue, Sequence, TrackInfo, WriteLimits, WriteReport
 
 
 # ---------------------------------------------------------------------- capabilities
@@ -79,6 +81,28 @@ class ParameterInfo(Protocol):
 class TrackMixer(Protocol):
     def muted(self, track: int) -> bool: ...
     def set_muted(self, track: int, muted: bool) -> bool: ...  # -> the state reported by the device
+    def level(self, track: int) -> MixValue: ...
+    def set_level(self, track: int, value: int) -> MixValue: ...  # value on level()'s scale; -> as the device took it
+    def pan(self, track: int) -> MixValue | None: ...  # None: the track has no pan
+    def set_pan(self, track: int, value: int) -> MixValue: ...
+
+
+class SoundSelector(Protocol):
+    def sounds(self, track: int) -> list[tuple[str, str]]: ...  # (group, e.g. the synth engine; sound name)
+    def set_sound(self, track: int, name: str, group: str | None = None) -> str: ...  # -> the track's sound now
+
+
+class StateStore(Protocol):
+    """Everything the backend knows of the device, as JSON-able data, and writing it back (ostinato.states keeps
+    it in files next to the generic part)."""
+    parts: tuple[str, ...]  # what apply() can write back, e.g. ("notes", "sound", "mix", "globals")
+
+    def capture(self) -> dict: ...  # re-reads the device first
+    def compatible(self, data: dict) -> str | None: ...  # why the data cannot go onto this device (None: it can)
+    def apply(self, data: dict, tracks: list[int], parts: list[str]) -> list[str]: ...  # -> what was done
+    def exact_supported(self) -> bool: ...  # an exact copy in the device's own format
+    def capture_exact(self) -> bytes: ...
+    def apply_exact(self, blob: bytes) -> None: ...
 
 
 class ControlHandle(Protocol):
@@ -115,6 +139,8 @@ class Backend:
     parameters: ParameterInfo | None = None
     controls: ControlInputs | None = None
     mixer: TrackMixer | None = None
+    sounds: SoundSelector | None = None
+    states: StateStore | None = None
 
     # ---- detection (hardware backends)
     @classmethod
@@ -136,7 +162,7 @@ class Backend:
 
     def capabilities(self) -> list[str]:
         return [n for n in ("tracks", "reader", "writer", "keys", "instruments", "tempo", "changes", "parameters",
-                            "controls", "mixer") if getattr(self, n) is not None]
+                            "controls", "mixer", "sounds", "states") if getattr(self, n) is not None]
 
     def setups(self) -> list:
         """The backend's own JSON setups (ostinato.setup.Setup subclasses), for settings forms."""

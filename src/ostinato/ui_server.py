@@ -204,7 +204,9 @@ def register(mcp, manager) -> None:
                         tracks.append({"track": t.track, "name": t.name, "kind": t.kind, "instrument": t.instrument,
                                        "key": SC.key_name(k) if k and k.scale != "chromatic" else None,
                                        "undo": s.undo_depth(t.track),
-                                       "muted": s.track_muted(t.track) if s.backend.mixer else None})
+                                       "muted": s.track_muted(t.track) if s.backend.mixer else None,
+                                       "level": _mix_json(s.track_level(t.track)) if s.backend.mixer else None,
+                                       "pan": _mix_json(s.track_pan(t.track)) if s.backend.mixer else None})
                     eng = s.engine
                     armed = [{"track": a.track, "algorithm": a.algorithm, "control": a.source, "kind": a.kind,
                               "runs": a.runs, "depth": a.depth, "last": a.last, "warnings": a.warnings}
@@ -301,6 +303,55 @@ def register(mcp, manager) -> None:
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
 
+    @mcp.custom_route("/api/ui/track/{track}/sounds", methods=["GET"])
+    async def sounds(request: Request):
+        s, err = session_or_error()
+        if err:
+            return err
+        try:
+            needs(s, "sounds")
+            t = track_arg(request, s)
+            choices = await run(s.sounds, t)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"track": t, "current": s.instrument(t),
+                             "sounds": [{"group": g, "name": n} for g, n in choices]})
+
+    @mcp.custom_route("/api/ui/track/{track}/sound", methods=["POST"])
+    async def set_sound(request: Request):
+        s, err = session_or_error()
+        if err:
+            return err
+        d = await body(request)
+        try:
+            needs(s, "sounds")
+            t = track_arg(request, s)
+            before, now = await run(s.set_sound, t, str(d.get("name") or ""), d.get("group") or None)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"instrument": now, "text": f"track {t}: {now}" + (f" (was {before})" if before else "")})
+
+    @mcp.custom_route("/api/ui/track/{track}/mix", methods=["POST"])
+    async def mix(request: Request):
+        """{"level": n, "relative": bool} and / or {"pan": n}: numbers on the device's scale, or text ("-6dB")."""
+        s, err = session_or_error()
+        if err:
+            return err
+        d = await body(request)
+        try:
+            needs(s, "mixer")
+            t = track_arg(request, s)
+            out = []
+            if d.get("level") is not None:
+                _, a = await run(s.set_track_level, t, d["level"], bool(d.get("relative")))
+                out.append(f"level {a.text}")
+            if d.get("pan") is not None:
+                _, a = await run(s.set_track_pan, t, d["pan"])
+                out.append(f"pan {a.text}")
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"text": f"track {t}: " + ", ".join(out) if out else "nothing to change"})
+
     @mcp.custom_route("/api/ui/track/{track}/undo", methods=["POST"])
     async def undo(request: Request):
         s, err = session_or_error()
@@ -355,6 +406,60 @@ def register(mcp, manager) -> None:
                              f"disarmed after {a.runs} run(s)" + (", restored" if d.get("restore") else "")})
 
     # ---- settings
+    # ---- saved states
+    def loaded_json(s) -> dict | None:
+        x = s.loaded
+        if x is None:
+            return None
+        out = {"name": x.name, "path": str(x.path), "summary": x.summary(), "exact": x.exact is not None,
+               "tracks": [t["track"] for t in x.data.get("tracks", [])], "compare": None,
+               "parts": list(s.backend.states.parts) if s.backend.states else ["notes", "sound"]}
+        if not s.not_ready():
+            try:
+                out["compare"] = s.compare_state()
+            except ValueError as e:
+                out["compare"] = [str(e)]
+        return out
+
+    @mcp.custom_route("/api/ui/states", methods=["GET"])
+    async def states_list(request: Request):
+        from . import states as ST
+
+        s = manager.session
+        xs = await run(ST.list_states)
+        return JSONResponse({"dir": str(ST.states_dir()), "states": xs,
+                             "loaded": await run(loaded_json, s) if s is not None else None})
+
+    @mcp.custom_route("/api/ui/states/{op}", methods=["POST"])
+    async def states_op(request: Request):
+        from . import states as ST
+
+        s, err = session_or_error()
+        if err:
+            return err
+        d = await body(request)
+        op = request.path_params["op"]
+        try:
+            if op == "save":
+                if s.not_ready():
+                    raise ValueError(s.not_ready())
+                x, w = await run(s.save_state, str(d.get("name") or ""), d.get("note") or None,
+                                 bool(d.get("exact", True)), bool(d.get("overwrite")))
+                return JSONResponse({"text": f"saved {x.name!r}" + (f" ({'; '.join(w)})" if w else "")})
+            if op == "load":
+                x = await run(s.load_state, str(d.get("name") or ""))
+                return JSONResponse({"text": f"loaded {x.name!r} (not applied)", "loaded": await run(loaded_json, s)})
+            if op == "apply":
+                needs(s, "writer")
+                out = await run(s.apply_state, d.get("tracks") or None, d.get("parts") or None, bool(d.get("exact")))
+                return JSONResponse({"text": "applied: " + "; ".join(out), "lines": out})
+            if op == "delete":
+                p = await run(ST.delete, str(d.get("name") or ""))
+                return JSONResponse({"text": f"deleted {p.name}"})
+        except (ST.StateError, ValueError, OSError) as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"error": f"no such operation: {op}"}, status_code=404)
+
     @mcp.custom_route("/api/ui/setups", methods=["GET"])
     async def setups(request: Request):
         def collect():
@@ -384,6 +489,13 @@ def register(mcp, manager) -> None:
             conf = await run(cls.save, d.get("values") or {})
         return JSONResponse({"values": conf.values, "notes": conf.notes, "source": conf.source,
                              "exists": conf.path.exists()})
+
+
+def _mix_json(m) -> dict | None:
+    if m is None:
+        return None
+    return {"value": m.value, "min": m.min, "max": m.max, "text": m.text, "db": m.to_db(), "db_zero": m.db_zero,
+            "db_step": m.db_step}
 
 
 def ui_url(info: dict) -> str:

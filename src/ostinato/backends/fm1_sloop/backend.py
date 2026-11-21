@@ -20,7 +20,7 @@ from fractions import Fraction
 from typing import Any, Callable
 
 from ...midi import Transport
-from ...model import (LEVELS, DeviceEvent, Event, Grid, Key, Note, Sequence, TrackInfo, WriteLimits,
+from ...model import (LEVELS, DeviceEvent, Event, Grid, Key, MixValue, Note, Sequence, TrackInfo, WriteLimits,
                       WriteReport)
 from ..base import Backend
 from . import keys as K
@@ -318,6 +318,60 @@ class _Instruments(_Parts):
         return _instrument(self.st, self.t0(track))
 
 
+def _norm(s: str) -> str:
+    return re.sub(r"[\s_\-/.]", "", s.upper())
+
+
+class _Sounds(_Parts):
+    """Synth tracks: the factory presets of every engine (PRESET); the drum track: its kits (P_E0, KIT)."""
+
+    def _kit_desc(self, t: int):
+        st = self.st
+        d = st.desc_for(t, st.info.pe0)
+        if not d or not d.names:
+            raise ValueError("the drum kit names are not known (reconnect to read them)")
+        return d
+
+    def sounds(self, track: int) -> list[tuple[str, str]]:
+        t = self.t0(track)
+        st = self.st
+        with st.lock:
+            if st.is_drum(t):
+                return [("KIT", n) for n in self._kit_desc(t).names]
+            return [(st.info.engines[e], n) for e in range(st.info.nengines)
+                    for n in st.preset_names.get(e, [])]
+
+    def set_sound(self, track: int, name: str, group: str | None = None) -> str:
+        t = self.t0(track)
+        st = self.st
+        choices = self.sounds(track)
+        key = _norm(name)
+        g = _norm(group) if group else None
+        hits = [(gr, n) for gr, n in choices
+                if (g is None or _norm(gr) == g) and (_norm(n) == key or _norm(gr + n) == key)]
+        if not hits:
+            import difflib
+
+            close = difflib.get_close_matches(key, {_norm(n): n for _, n in choices}.keys(), 5, 0.6)
+            names = {_norm(n): f"{gr} / {n}" for gr, n in choices}
+            raise ValueError(f"no sound {name!r}" + (f" in {group}" if group else "") + " on this track"
+                             + (f"; did you mean: {', '.join(names[c] for c in close)}?" if close else
+                                " (ostinato_instruments lists them)"))
+        if len(hits) > 1:
+            raise ValueError(f"{name!r} is in several engines: " + ", ".join(f"{gr} / {n}" for gr, n in hits)
+                             + " (give the engine too)")
+        gr, n = hits[0]
+        if st.is_drum(t):
+            d = self._kit_desc(t)
+            pid = st.info.pe0
+            self.dev.write_track(t, params={pid: d.min + d.names.index(n)}, label=f"kit {n}", record=False)
+        else:
+            engine = st.info.engines.index(gr)
+            preset = st.preset_names[engine].index(n)
+            self.dev.load_preset(t, engine, preset)
+        return _instrument(st, t) or n
+
+
 class _Tempo(_Parts):
     def tempo(self) -> float | None:
         st = self.st
@@ -377,6 +431,50 @@ class _Mixer(_Parts):
                                      source="server", record=False)["params"][pid]
         return bool(value)
 
+    def level(self, track: int) -> MixValue:
+        """Synth tracks: P_LEVEL (dB: 112 = 0 dB, 0.5 dB a step, 0 = OFF); the drum track: the global drum
+        level (0..127, no unit)."""
+        t = self.t0(track)
+        st = self.st
+        with st.lock:
+            v = st.tracks[t].level
+            if st.is_drum(t):
+                gid = self.dev._drum_level_id()
+                d = st.gdesc[gid] if gid is not None and gid < len(st.gdesc) else None
+                lo, hi = (d.min, d.max) if d and d.max > d.min else (0, 127)
+                return MixValue(v, lo, hi, str(v))
+            d = st.pdesc[0] if st.pdesc else None
+            lo, hi = (d.min, d.max) if d and d.max > d.min else (0, 127)
+            db = d is not None and d.fmt == P.Fmt.DB
+            return MixValue(v, lo, hi, P.fmt_value(d, v), 112 if db else None, 0.5 if db else None)
+
+    def set_level(self, track: int, value: int) -> MixValue:
+        self.dev.set_level(self.t0(track), value)
+        return self.level(track)
+
+    def _pan_id(self) -> int | None:
+        return self.st.param_id("PAN", P.Fmt.BIPCT)
+
+    def pan(self, track: int) -> MixValue | None:
+        t = self.t0(track)
+        st = self.st
+        pid = self._pan_id()
+        with st.lock:
+            if pid is None or pid >= len(st.tracks[t].params):
+                return None
+            d = st.pdesc[pid]
+            v = st.tracks[t].params[pid]
+            return MixValue(v, d.min, d.max, P.fmt_value(d, v))
+
+    def set_pan(self, track: int, value: int) -> MixValue:
+        t = self.t0(track)
+        cur = self.pan(track)
+        if cur is None:
+            raise ValueError("this track has no pan")
+        v = max(cur.min, min(cur.max, int(value)))
+        self.dev.write_track(t, params={self._pan_id(): v}, label="pan", source="server", record=False)
+        return self.pan(track)
+
 
 # ---------------------------------------------------------------------- the backend
 
@@ -399,6 +497,10 @@ on the device for the selected track only: ostinato_refresh re-reads another tra
         self.writer = _Writer(self)
         self.keys = _Keys(self)
         self.instruments = _Instruments(self)
+        self.sounds = _Sounds(self)
+        from .states import SloopStates
+
+        self.states = SloopStates(self)
         self.tempo = _Tempo(self)
         self.changes = _Changes(self)
         self.parameters = _Parameters(self)
