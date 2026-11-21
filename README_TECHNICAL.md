@@ -337,6 +337,19 @@ PyInstaller (`installer\ostinato.spec`) into `dist\Ostinato\`, checks that the b
 - **Not signed**: SmartScreen warns on first run ("More info", "Run anyway") until a code-signing certificate is
   used (`signtool` on both `.exe` files and the installer).
 
+### Releases (`.github/workflows/release.yml`)
+
+1. Raise `version` in `pyproject.toml` (and `uv lock`), commit and push.
+2. On GitHub, create a release with the tag `v<version>` and publish it.
+3. The workflow (on `windows-latest`, about 10 minutes) checks that the tag matches the version, runs the tests,
+   builds with `tools\build_windows.ps1` (installing Inno Setup if the runner lacks it) and attaches
+   `Ostinato-Setup-<version>.exe` and its `.sha256` to the release. A mismatched tag or a failing test stops it
+   before anything is attached.
+
+"Run workflow" on the Actions tab builds the same installer without a release and keeps it for 14 days as a
+downloadable artifact: a way to try a build first. The build installs with `uv sync --frozen`: commit `uv.lock`
+with any change to the dependencies.
+
 | Tests (`tests/`) | |
 | --- | --- |
 | `test_music.py` | Scales and spelling, notes in, fitting to a device's limits, text views, staffs |

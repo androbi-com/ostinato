@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Builds the Windows installer and attaches it to a GitHub release.
+#
+#   Publishing a release (tag v<version>, matching `version` in pyproject.toml): the tests run, the installer is
+#   built with tools/build_windows.ps1, and Ostinato-Setup-<version>.exe and its .sha256 are attached to it.
+#   "Run workflow" (Actions tab): the same build, kept as a downloadable artifact; no release is touched.
+name: Windows installer
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # (to attach the files to the release)
+
+concurrency:
+  group: windows-installer-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.9.9"
+
+      - name: Version
+        id: version
+        run: |
+          $m = Select-String -Path pyproject.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+          if (-not $m) { throw "no version in pyproject.toml" }
+          $version = $m.Matches[0].Groups[1].Value
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "pyproject.toml: $version"
+          if ("${{ github.event_name }}" -eq "release") {
+            $tag = "${{ github.event.release.tag_name }}"
+            if ($tag -ne "v$version" -and $tag -ne $version) {
+              throw "The release tag '$tag' does not match the version in pyproject.toml ($version): tag the release v$version, or raise the version first."
+            }
+          }
+
+      - name: Tests
+        run: |
+          uv sync --frozen
+          uv run --frozen pytest -q
+
+      - name: Inno Setup
+        run: |
+          $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") |
+            Where-Object { Test-Path $_ } | Select-Object -First 1
+          if ($iscc) { Write-Host "found $iscc" } else { choco install innosetup -y --no-progress }
+
+      - name: Build the installer
+        run: ./tools/build_windows.ps1
+
+      - name: Checksum
+        id: files
+        run: |
+          $exe = "dist/Ostinato-Setup-${{ steps.version.outputs.version }}.exe"
+          if (-not (Test-Path $exe)) { throw "$exe was not built" }
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  $(Split-Path $exe -Leaf)" | Out-File -Encoding ascii -NoNewline "$exe.sha256"
+          "exe=$exe" >> $env:GITHUB_OUTPUT
+          Write-Host "$(Split-Path $exe -Leaf): $hash"
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" "${{ steps.files.outputs.exe }}" "${{ steps.files.outputs.exe }}.sha256" --clobber
+
+      - name: Keep as an artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ostinato-Setup-${{ steps.version.outputs.version }}
+          path: |
+            ${{ steps.files.outputs.exe }}
+            ${{ steps.files.outputs.exe }}.sha256
+          retention-days: 14
