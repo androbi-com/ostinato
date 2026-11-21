@@ -95,7 +95,7 @@ class SoundSelector(Protocol):
 
 class TransportControl(Protocol):
     def available(self) -> bool: ...  # (the connected firmware can be started / stopped)
-    def playing(self) -> bool | None: ...  # None: not known
+    def playing(self, fresh: bool = False) -> bool | None: ...  # None: not known; fresh: ask the device now
     def set_playing(self, how: str) -> bool: ...  # "play" / "stop" / "toggle" -> playing afterwards
     def details(self) -> dict: ...  # e.g. song mode, as the device reports it
 

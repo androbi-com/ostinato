@@ -197,9 +197,9 @@ class Session:
         self.log("mix", track, f"pan {after.text} (was {before.text})", source=source)
         return before, after
 
-    def playing(self) -> bool | None:
+    def playing(self, fresh: bool = False) -> bool | None:
         t = self.backend.transport
-        return t.playing() if t is not None and t.available() else None
+        return t.playing(fresh) if t is not None and t.available() else None
 
     def set_playing(self, how: str) -> bool:
         """"play" / "stop" / "toggle" -> playing afterwards."""
@@ -389,7 +389,7 @@ class Session:
         dev = (s.data.get("device") or {}).get("backend")
         if dev and dev != b.name:
             raise S.StateError(f"the state was saved from another kind of device ({dev}), this is {b.name}")
-        if exact and self.playing():
+        if exact and self.playing(fresh=True):
             raise ValueError("stop the song first: the exact copy can only be loaded while it is stopped")
         out: list[str] = []
         if backup:
@@ -403,7 +403,7 @@ class Session:
                     raise S.StateError(f"the state {s.name!r} has no exact copy")
                 if not (b.states and b.states.exact_supported()):
                     raise NotSupported("this device cannot take an exact copy")
-                if self.playing():
+                if self.playing(fresh=True):
                     raise ValueError("stop the song first: the exact copy can only be loaded while it is stopped")
                 if set(tracks) != set(all_tracks) or (parts and set(parts) != set(b.states.parts)):
                     raise ValueError("the exact copy goes back whole: every track, every part")

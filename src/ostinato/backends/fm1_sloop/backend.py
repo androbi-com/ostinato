@@ -378,7 +378,13 @@ class _Transport(_Parts):
     def available(self) -> bool:
         return self.dev is not None and self.dev.live_supported()
 
-    def playing(self) -> bool | None:
+    def playing(self, fresh: bool = False) -> bool | None:
+        """fresh: ask the device now (else the last poll, up to half a second old)."""
+        if fresh and self.available():
+            try:
+                return self.dev.live()["playing"]
+            except Exception:
+                pass
         return self.st.playing
 
     def set_playing(self, how: str) -> bool:

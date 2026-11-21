@@ -304,6 +304,38 @@ The simulator (`backends/fm1_sloop/sim.py`) is seeded from the SLOOP web editor'
 | `backends/fm1_sloop/` | `backend.py` (capabilities, steps <-> events), `states.py` (capture / apply), `keys.py`, `controls.py`, `protocol.py`, `link.py`, `device.py` (sync, writes, presets, mix, LIVE, backup objects), `state.py`, `render.py` (overview, parameters), `sim.py` + `data/` (simulator) |
 | `device_server.py`, `shim.py`, `midi.py`, `owner.py` | `ostinato-device`, `ostinato-mcp`, MIDI ports, the single-instance lock |
 | `ui_server.py`, `ui/` | The browser UI: the access gate, the `/api/ui/*` routes; the page (`index.html`, `app.js`, `style.css`) |
+| `launcher.py`, `tray.py`, `icon.py`, `claude_config.py` | The Windows bundle: one CLI for everything, the tray app, the drawn icon, Claude Desktop's config (below) |
+
+### The Windows installer
+
+```
+powershell -ExecutionPolicy Bypass -File tools\build_windows.ps1    # -SkipInstaller: only the bundle
+```
+
+It builds in an environment of its own (`build\venv`, `uv sync --group build`), draws `build\ostinato.ico`, runs
+PyInstaller (`installer\ostinato.spec`) into `dist\Ostinato\`, checks that the bundle starts, and, with
+[Inno Setup 6](https://jrsoftware.org/isinfo.php) installed (`winget install JRSoftware.InnoSetup`), compiles
+`installer\ostinato.iss` into `dist\Ostinato-Setup-<version>.exe`.
+
+- **The bundle** (about 150 MB; one folder, two programs sharing Python and the libraries): `Ostinato.exe`, the tray
+  app (windowed), and `ostinato-cli.exe` (console) for everything else: `ostinato-cli` runs the device server,
+  `ostinato-cli mcp` is what Claude starts, `ostinato-cli ui|status|stop` as `ostinato-device`, and
+  `ostinato-cli claude-config add|remove|show`. (Not `ostinato.exe`: Windows file names ignore case.) music21's
+  sheet-music corpus is left out (unused, 90 MB); verovio's renamed C++ runtime (`verovio.libs`) is kept explicitly.
+- **The tray app** (`tray.py`, also `ostinato-tray` in a Python install) starts the device server hidden (or uses
+  one that runs), with its output in `<setup folder>\logs\device.log`; its icon's dot is green when the device is
+  connected, amber while it waits; the menu opens the page, releases / reconnects the device, opens the setup folder
+  or the log, and quits (stopping the device server). A second start only opens the page (a named mutex);
+  `--no-open` starts without opening the page (the sign-in shortcut).
+- **The installer** installs per user, without administrator rights, to `%LOCALAPPDATA%\Programs\Ostinato`: Start
+  menu entry, optional sign-in start and desktop shortcut, the GPL as the license page. "Connect Ostinato to Claude
+  Desktop" runs `claude-config add`: it adds `{"command": "...\\ostinato-cli.exe", "args": ["mcp"]}` as
+  `mcpServers.ostinato`, keeps everything else, saves the previous file as `.bak`, refuses a file that is not valid
+  JSON, and also handles the Microsoft Store build's config folder. An update first stops the running device
+  server and tray. Uninstalling stops them, removes the Claude entry only if it points at the installed program,
+  and asks before deleting the setup folder (saved states, settings).
+- **Not signed**: SmartScreen warns on first run ("More info", "Run anyway") until a code-signing certificate is
+  used (`signtool` on both `.exe` files and the installer).
 
 | Tests (`tests/`) | |
 | --- | --- |
@@ -312,6 +344,7 @@ The simulator (`backends/fm1_sloop/sim.py`) is seeded from the SLOOP web editor'
 | `test_protocol.py`, `test_backend_sloop.py`, `test_sync.py` | SLOOP: encoders / parsers, the capabilities on the simulator, pushes |
 | `test_states.py` | Saved states: save, load, compare, apply whole / in part / exactly, undo |
 | `test_daemon.py`, `test_owner.py`, `test_ui.py` | The device server and shim, the single-instance lock, the page's routes |
+| `test_claude_config.py` | The installer's Claude Desktop config helper: adds / removes only its own entry |
 
 ## License
 

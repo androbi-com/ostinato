@@ -72,7 +72,24 @@ state in Ostinato.
 
 ---
 
-## Quick start
+## Install on Windows (no Python needed)
+
+1. Download **`Ostinato-Setup-<version>.exe`** from the
+   [Releases page](https://github.com/androbi-com/ostinato/releases) and run it.
+2. Leave **"Connect Ostinato to Claude Desktop"** ticked if you use Claude Desktop, and choose whether Ostinato
+   should start when you sign in to Windows.
+3. Plug in your FM-1 and start **Ostinato** from the Start menu. It waits in the **tray, next to the clock**: its
+   icon has a green dot when the FM-1 is connected. Click it for the page in your browser, to release the FM-1 for
+   the SLOOP editor, or to quit.
+4. If you connected Claude Desktop, restart it once.
+
+Windows may say *"Windows protected your PC"* the first time, because the installer is not signed: click
+**More info**, then **Run anyway**. Uninstall from Windows' *Installed apps*: your saved states are kept unless you
+choose otherwise.
+
+---
+
+## Quick start (from source, any system)
 
 You need [uv](https://docs.astral.sh/uv/) and an FM-1 with SLOOP connected by USB.
 

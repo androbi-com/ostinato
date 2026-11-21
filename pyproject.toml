@@ -16,11 +16,17 @@ dependencies = [
     "python-rtmidi>=1.5.8",
     "resvg-py>=0.5.0",
     "verovio>=6.4.1",
+    "pystray>=0.19.5; sys_platform == 'win32'",
+    "pillow>=10.0; sys_platform == 'win32'",
 ]
 
 [project.scripts]
 ostinato-mcp = "ostinato.shim:main"
 ostinato-device = "ostinato.device_server:main"
+ostinato = "ostinato.launcher:main"
+
+[project.gui-scripts]
+ostinato-tray = "ostinato.tray:main"
 
 [build-system]
 requires = ["uv_build>=0.9.9,<0.10.0"]
@@ -32,4 +38,7 @@ module-name = "ostinato"
 [dependency-groups]
 dev = [
     "pytest>=9.2.0",
+]
+build = [
+    "pyinstaller>=6.11",
 ]

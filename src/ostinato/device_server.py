@@ -396,11 +396,40 @@ def run(port: int, simulate: str | None = None, midi_port: str | None = None) ->
     return 0
 
 
-def stop() -> int:
+def _process_exe(pid: int) -> str | None:
+    """The program file of a running process (Windows; elsewhere /proc), None when not known."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+
+            k = ctypes.windll.kernel32
+            h = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return None
+            try:
+                buf = ctypes.create_unicode_buffer(32768)
+                n = wintypes.DWORD(len(buf))
+                return buf.value if k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n)) else None
+            finally:
+                k.CloseHandle(h)
+        return os.path.realpath(f"/proc/{pid}/exe")
+    except OSError:
+        return None
+
+
+def stop(if_mine: bool = False) -> int:
+    """Stop the running device server. if_mine: only one that is this program (the installer's uninstall must not
+    stop a developer's own device server)."""
     info = read_info()
     if not info:
         print("No ostinato device server is running.")
         return 0
+    if if_mine:
+        exe = _process_exe(int(info.get("pid") or 0))
+        if exe is None or os.path.normcase(os.path.dirname(exe)) != os.path.normcase(os.path.dirname(sys.executable)):
+            print(f"The running device server is another program ({exe or 'not known'}): left alone.")
+            return 0
     try:
         _api(info, "/api/shutdown", "POST")
     except (urllib.error.URLError, OSError) as e:
@@ -472,11 +501,13 @@ def main(argv: list[str] | None = None) -> None:
                     help="a substring of the device's MIDI port name (default: auto-detect)")
     ap.add_argument("--simulate", nargs="?", const="sloop", default=os.environ.get("OSTINATO_SIMULATE") or None,
                     metavar="BACKEND", help="a simulated device of that backend (default sloop)")
+    ap.add_argument("--if-mine", action="store_true",
+                    help="stop: only a device server that is this program (e.g. the installed one)")
     args = ap.parse_args(argv)
     logging.basicConfig(stream=sys.stderr, level=os.environ.get("OSTINATO_LOG", "INFO").upper(),
                         format="%(asctime)s %(name)s %(levelname)s %(message)s")
     if args.command == "stop":
-        sys.exit(stop())
+        sys.exit(stop(args.if_mine))
     if args.command == "status":
         sys.exit(status())
     if args.command == "ui":
