@@ -1,0 +1,16 @@
+{
+  "_doc": "The FM-1 knob that the SLOOP backend offers as an encoder (control input \"knob\") for generative mode. Keys starting with _ are comments.",
+  "param": "PHS",
+  "_param": "The track parameter (its label on the device) used as the knob: PHS is LFO > PHS, silent while the LFO's destinations are 0. The firmware reports knob turns only for the selected track: select the armed track on the FM-1.",
+  "center": 64,
+  "_center": "Where the knob is parked while in use (room to turn both ways), and again after it has been still far from it; its original value comes back afterwards.",
+  "_ui": {
+    "ranges": {
+      "center": [
+        0,
+        127,
+        1
+      ]
+    }
+  }
+}

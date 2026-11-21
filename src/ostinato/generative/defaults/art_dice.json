@@ -1,0 +1,11 @@
+{
+  "_doc": "art_dice: Dice: a new spice pattern without mutations. Gates, ratchets and silences follow art_spice's settings.",
+  "amount": null,
+  "_amount": "The spice amount to roll at (0..1). Empty: the track's last spice amount (or art_spice's amount).",
+  "seed": null,
+  "_seed": "null: different every time; a number: repeatable.",
+  "_ui": {
+    "ranges": {"amount": [0, 1, 0.05]},
+    "placeholders": {"amount": "empty: the last amount"}
+  }
+}

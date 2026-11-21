@@ -1,0 +1,43 @@
+{
+  "_doc": "How a control drives generative mode (any control input: the device's knob, a key, later an external MIDI controller). Keys starting with _ are comments.",
+  "settle_ms": 300,
+  "_settle_ms": "An encoder turn ends after this long without movement; then it runs.",
+  "units_per_level": 4,
+  "_units_per_level": "How many encoder increments make one more level of intensity (1, 2, 3, ...: more notes change).",
+  "max_level": 8,
+  "_max_level": "The most intensity (or undo steps) one turn can give.",
+  "left": "undo",
+  "_left": "Turning counter-clockwise: \"undo\" steps back through the runs (one per level), \"vary\" runs as clockwise does.",
+  "debounce_ms": 150,
+  "_debounce_ms": "Button presses closer than this count as one (a chord on the keys).",
+  "_ui": {
+    "choices": {
+      "left": [
+        "undo",
+        "vary"
+      ]
+    },
+    "ranges": {
+      "settle_ms": [
+        50,
+        2000,
+        10
+      ],
+      "units_per_level": [
+        1,
+        32,
+        1
+      ],
+      "max_level": [
+        1,
+        32,
+        1
+      ],
+      "debounce_ms": [
+        0,
+        1000,
+        10
+      ]
+    }
+  }
+}

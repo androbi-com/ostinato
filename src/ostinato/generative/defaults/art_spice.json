@@ -1,0 +1,39 @@
+{
+  "_doc": "art_spice: Spice: random gate lengths, ratchets and silences over the pattern; non-destructive: it always starts from the pattern before spice, amount 0 gives it back, and the same amount gives the same changes (until art_dice or art_mutate rolls new ones).",
+  "amount": 0.4,
+  "_amount": "How much spice (0..1): more amount keeps the changes of less and adds more.",
+  "amount_per_level": 0.15,
+  "_amount_per_level": "With the knob: each level of a longer turn adds this much amount.",
+  "gate": {
+    "share": 1.0,
+    "short": 0.5,
+    "long": 0.5
+  },
+  "_gate": "share: how many notes (at full amount) get a new gate length; short / long: the weights of one step versus a tail (up to max_tail_steps, never past the next note).",
+  "max_tail_steps": 4,
+  "_max_tail_steps": "The longest tail, in steps.",
+  "ratchet": {
+    "share": 0.35,
+    "max": 3
+  },
+  "_ratchet": "share: how many notes (at full amount) get ratchets; max: the most hits (2..max).",
+  "silence": {
+    "share": 0.3
+  },
+  "_silence": "How many notes (at full amount) fall silent.",
+  "keep_first_note": true,
+  "_keep_first_note": "Never spice the first note of the pattern.",
+  "seed": null,
+  "_seed": "null: a new spice pattern per track when it starts; a number: repeatable.",
+  "_ui": {
+    "ranges": {
+      "amount": [0, 1, 0.05],
+      "amount_per_level": [0, 0.5, 0.05],
+      "gate.*": [0, 1, 0.05],
+      "max_tail_steps": [2, 16, 1],
+      "ratchet.share": [0, 1, 0.05],
+      "ratchet.max": [2, 4, 1],
+      "silence.*": [0, 1, 0.05]
+    }
+  }
+}

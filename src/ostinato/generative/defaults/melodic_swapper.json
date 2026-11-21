@@ -1,0 +1,126 @@
+{
+  "_doc": "melodic_swapper: swaps some notes of a melodic line for new ones in the scale; the rhythm stays. Copy this file to your setup folder (the ostinato_generators tool does it) and change any value; keys starting with _ are comments.",
+  "notes_per_trigger": {
+    "_open": true,
+    "1": 0.6,
+    "2": 0.3,
+    "3": 0.1
+  },
+  "_notes_per_trigger": "How many notes change per trigger, as probabilities by count (normalised; capped at the notes there are).",
+  "intensity_gain": 0.5,
+  "_intensity_gain": "A longer knob turn (intensity 2, 3, ...) changes more notes: the count drawn from notes_per_trigger times 1 + gain x (intensity - 1). 0: the turn's length does not matter.",
+  "scale_source": "auto",
+  "_scale_source": "\"own\": the track's scale; \"auto\": its own, or borrowed from the first other track that has a scale; or a track number to borrow from (the device says which key each track has).",
+  "fallback_scale": "pattern",
+  "_fallback_scale": "No scale anywhere: \"pattern\" (the pitch classes the pattern already uses) or \"chromatic\".",
+  "keep_first_note": true,
+  "_keep_first_note": "Never change the pattern's first note (keeps the line anchored).",
+  "chords": "top",
+  "_chords": "Steps with several notes: \"top\" changes the highest note only, \"skip\" leaves them alone.",
+  "avoid_repeat": true,
+  "_avoid_repeat": "The new note always differs from the old one.",
+  "range": {
+    "below": 2,
+    "above": 3
+  },
+  "_range": "Semitones the new notes may go below the pattern's lowest / above its highest note.",
+  "max_leap": 7,
+  "_max_leap": "Largest interval (semitones) from the previous note.",
+  "motion": {
+    "step": 0.55,
+    "skip": 0.3,
+    "leap": 0.15
+  },
+  "_motion": "Weights for the interval from the previous note: step (1-2 semitones), skip (3-4), leap (5 and more).",
+  "tone_weights": {
+    "root": 1.5,
+    "third": 1.3,
+    "fifth": 1.2,
+    "other": 1.0
+  },
+  "_tone_weights": "Extra weight for scale degrees of the new note.",
+  "transition": {
+    "probability": 0.25,
+    "targets": [
+      "root",
+      "third"
+    ],
+    "approach": {
+      "below": 0.6,
+      "above": 0.4
+    }
+  },
+  "_transition": "When the note after a swapped one is a target (root, third, fifth of the scale), with this probability the swapped note becomes a chromatic approach to it: a semitone below or above (weights), even outside the scale.",
+  "seed": null,
+  "_seed": "null: different every time; a number: repeatable results.",
+  "_ui": {
+    "_doc": "Hints for settings forms: choices (\"#track\": the device's track numbers) and slider ranges [min, max, step] by dotted key.",
+    "choices": {
+      "scale_source": [
+        "auto",
+        "own",
+        "#track"
+      ],
+      "fallback_scale": [
+        "pattern",
+        "chromatic"
+      ],
+      "chords": [
+        "top",
+        "skip"
+      ],
+      "transition.targets": [
+        "root",
+        "third",
+        "fifth"
+      ]
+    },
+    "ranges": {
+      "notes_per_trigger.*": [
+        0,
+        1,
+        0.05
+      ],
+      "intensity_gain": [
+        0,
+        4,
+        0.1
+      ],
+      "range.below": [
+        0,
+        24,
+        1
+      ],
+      "range.above": [
+        0,
+        24,
+        1
+      ],
+      "max_leap": [
+        1,
+        24,
+        1
+      ],
+      "motion.*": [
+        0,
+        1,
+        0.05
+      ],
+      "tone_weights.*": [
+        0,
+        3,
+        0.1
+      ],
+      "transition.probability": [
+        0,
+        1,
+        0.05
+      ],
+      "transition.approach.*": [
+        0,
+        1,
+        0.05
+      ]
+    }
+  }
+}

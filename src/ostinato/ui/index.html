@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ostinato</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="mark" aria-hidden="true">𝄆</span> Ostinato</div>
+  <div class="device" id="device">
+    <span class="dot" id="dot"></span>
+    <span id="device-text">connecting to the device server…</span>
+  </div>
+  <div class="top-actions">
+    <span class="tempo" id="tempo"></span>
+    <button id="btn-release" class="ghost" hidden title="Release the device, e.g. for its own editor">Release</button>
+    <button id="btn-connect" class="ghost" hidden title="Take the device back">Reconnect</button>
+  </div>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button role="tab" data-tab="tracks" aria-selected="true">Tracks</button>
+  <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
+  <button role="tab" data-tab="activity" aria-selected="false">Activity</button>
+</nav>
+
+<main>
+  <section id="tab-tracks" class="tab">
+    <div id="notice" class="notice" hidden></div>
+    <div id="tracks"></div>
+  </section>
+  <section id="tab-settings" class="tab" hidden>
+    <p class="lead">Settings are saved to your setup folder and used by every client (this page, Claude) from the
+      next run on. A value of the wrong kind or out of range falls back to its default, and the note says so.</p>
+    <div id="setups"></div>
+  </section>
+  <section id="tab-activity" class="tab" hidden>
+    <p class="lead">What happened on the device and here: edits made on the device, writes, generative runs, undos.</p>
+    <ol id="log" class="log"></ol>
+  </section>
+</main>
+
+<div id="toasts" class="toasts" aria-live="polite"></div>
+<script src="/ui/app.js"></script>
+</body>
+</html>

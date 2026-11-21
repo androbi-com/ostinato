@@ -1,0 +1,63 @@
+{
+  "_doc": "art_mutate: Mutate: one run changes a segment of the pattern and keeps its identity. Cumulative: each run mutates the result of the last (undo goes back).",
+  "probability": 0.5,
+  "_probability": "The size of the segment where changes happen, as a share of a phrase.",
+  "random": 0.4,
+  "_random": "The share of the segment's notes that change.",
+  "polyphony": 0.1,
+  "_polyphony": "The probability that a changed note gets a third or fifth of the scale stacked on it.",
+  "density": null,
+  "_density": "The share of the segment's steps that should hold notes: notes are added or removed towards it. Empty: the pattern's own (no notes added or removed).",
+  "length": 0.25,
+  "_length": "The probability that a changed note also changes length (one step, two, or up to the next note).",
+  "operations": {
+    "pattern_note": 0.35,
+    "octave": 0.2,
+    "fifth": 0.15,
+    "step": 0.15,
+    "swap": 0.15
+  },
+  "_operations": "How a note changes, by weight: another note of the pattern, an octave up / down, a fifth up / a fourth down (when it stays in the scale), a step of the scale, or swapping with another note of the segment.",
+  "intensity_gain": 0.6,
+  "_intensity_gain": "A longer knob turn (intensity 2, 3...) widens the segment and the share of changed notes by 1 + gain x (intensity - 1) (like a longer press).",
+  "phrase_steps": 16,
+  "_phrase_steps": "Steps per phrase.",
+  "phrases": "abac",
+  "_phrases": "abac: on patterns of two phrases or more only the even phrases (B, C) change, so the pattern keeps an A-B-A-C form; all: any phrase.",
+  "scale_source": "auto",
+  "_scale_source": "The scale for fifths, steps and stacked notes: own, auto (own, or borrowed from another track), or a track number.",
+  "fallback_scale": "pattern",
+  "_fallback_scale": "Without a scale on any track: pattern (the pitch classes the pattern uses) or chromatic.",
+  "range": {
+    "below": 12,
+    "above": 12
+  },
+  "_range": "Semitones the notes may go below the pattern's lowest / above its highest note.",
+  "new_spice": true,
+  "_new_spice": "Also roll a new spice pattern; with spice on the track, the mutation goes under it and the new spice on top.",
+  "keep_first_note": true,
+  "_keep_first_note": "Never change the first note of the pattern.",
+  "seed": null,
+  "_seed": "null: different every time; a number: repeatable results.",
+  "_ui": {
+    "choices": {
+      "phrases": ["abac", "all"],
+      "scale_source": ["auto", "own", "#track"],
+      "fallback_scale": ["pattern", "chromatic"]
+    },
+    "ranges": {
+      "probability": [0, 1, 0.05],
+      "random": [0, 1, 0.05],
+      "polyphony": [0, 1, 0.05],
+      "density": [0, 1, 0.05],
+      "length": [0, 1, 0.05],
+      "operations.*": [0, 1, 0.05],
+      "intensity_gain": [0, 2, 0.1],
+      "phrase_steps": [4, 32, 4],
+      "range.*": [0, 24, 1]
+    },
+    "placeholders": {
+      "density": "empty: the pattern's own"
+    }
+  }
+}
