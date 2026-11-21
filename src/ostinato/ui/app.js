@@ -61,8 +61,9 @@ async function act(path, body, label) {
 // ---------------------------------------------------------------- state
 const S = {
   state: null, logVersion: -1, tracksKey: "", views: {}, data: {}, lastLog: 0, setupsShown: false,
-  algoChoice: {}, controlChoice: {}, actionsKeys: {},
+  algoChoice: {}, controlChoice: {}, actionsKeys: {}, collapsed: {},
 };
+try { S.collapsed = JSON.parse(localStorage.getItem("ostinato.collapsed") || "{}") || {}; } catch (e) { S.collapsed = {}; }
 
 function can(cap) { return S.state && S.state.capabilities.includes(cap); }
 
@@ -98,6 +99,11 @@ function renderHeader(st) {
   else text = `looking for a device… ${s0.scan ? "(" + s0.scan + ")" : ""}`;
   $("#device-text").textContent = text;
   $("#tempo").textContent = st.tempo ? `♩ = ${Math.round(st.tempo)}` : "";
+  const play = $("#btn-play");
+  play.hidden = st.playing == null;
+  play.textContent = st.playing ? "■ Stop" : "▶ Play";
+  play.setAttribute("aria-pressed", !!st.playing);
+  play.classList.toggle("on", !!st.playing);
   $("#btn-release").hidden = !s0.connected;
   $("#btn-connect").hidden = !!s0.connected;
   const notice = $("#notice");
@@ -116,8 +122,13 @@ function buildTracks(st) {
   S.actionsKeys = {};
   for (const t of st.tracks) {
     if (!S.views[t.track]) S.views[t.track] = "roll";
-    const card = h("article", { class: "track " + t.kind, id: "track-" + t.track },
+    const collapsed = !!S.collapsed[t.track];
+    const card = h("article", { class: "track " + t.kind + (collapsed ? " collapsed" : ""), id: "track-" + t.track },
       h("div", { class: "track-head" },
+        h("button", { class: "fold", "aria-expanded": !collapsed, "aria-controls": "track-body-" + t.track,
+          title: collapsed ? "Show this track" : "Hide this track", onclick: () => toggleTrack(t.track) },
+          s("svg", { class: "tri", viewBox: "0 0 12 12", width: 12, height: 12, "aria-hidden": "true" },
+            s("path", { d: "M1.5 3.5 L10.5 3.5 L6 9.5 Z", fill: "currentColor" }))),
         h("span", { class: "track-num", text: t.track }),
         can("sounds") ? soundSelect(t) : h("span", { class: "track-title", text: t.instrument || t.name }),
         h("span", { class: "tag", text: t.kind }),
@@ -128,12 +139,26 @@ function buildTracks(st) {
         h("div", { class: "seg", role: "group" },
           h("button", { "aria-pressed": S.views[t.track] === "roll", onclick: () => setView(t.track, "roll"), text: "Steps" }),
           h("button", { "aria-pressed": S.views[t.track] === "staff", onclick: () => setView(t.track, "staff"), text: "Staff" }))),
-      h("div", { class: "track-actions", "data-role": "actions" }),
-      h("div", { class: "roll", "data-role": "roll" }),
-      h("div", { class: "staff", "data-role": "staff", hidden: true }));
+      h("div", { class: "track-body", id: "track-body-" + t.track },
+        h("div", { class: "track-actions", "data-role": "actions" }),
+        h("div", { class: "roll", "data-role": "roll" }),
+        h("div", { class: "staff", "data-role": "staff", hidden: true })));
     box.append(card);
   }
   updateTrackChrome(st);
+}
+
+// fold / unfold a track (an accordion): remembered in this browser
+function toggleTrack(track) {
+  const card = $("#track-" + track);
+  const collapsed = !card.classList.contains("collapsed");
+  card.classList.toggle("collapsed", collapsed);
+  const btn = card.querySelector(".fold");
+  btn.setAttribute("aria-expanded", !collapsed);
+  btn.title = collapsed ? "Show this track" : "Hide this track";
+  if (collapsed) S.collapsed[track] = true; else delete S.collapsed[track];
+  try { localStorage.setItem("ostinato.collapsed", JSON.stringify(S.collapsed)); } catch (e) { /* (not kept) */ }
+  if (!collapsed) drawTrack(track);  // (the roll fits the card's width, unknown while hidden)
 }
 
 // the track's sound as a menu (presets grouped by engine; kits on the drum track); the list is fetched once per
@@ -356,7 +381,7 @@ function trackActions(t, armed, st) {
   const algos = st.algorithms.filter(a => a.kinds.includes(t.kind === "chords" ? "chords" : t.kind));
   if (algos.length) {
     if (!S.algoChoice[t.track] || !algos.some(a => a.name === S.algoChoice[t.track])) S.algoChoice[t.track] = algos[0].name;
-    const action = h("button", { class: "primary", disabled: !!armed,
+    const action = h("button", { class: "ghost", disabled: !!armed,
       onclick: () => act(`/api/ui/track/${t.track}/generate`, { algorithm: S.algoChoice[t.track] },
         S.algoChoice[t.track] === "random_initializer" ? "Initialize" : "Vary") });
     const updateAction = value => {
@@ -680,6 +705,8 @@ document.querySelectorAll(".tabs button").forEach(b => b.addEventListener("click
   if (b.dataset.tab === "settings" && !S.setupsShown) { S.setupsShown = true; loadSetups(); }
   if (b.dataset.tab === "states") loadStates();
 }));
+$("#btn-play").onclick = () => act("/api/ui/transport", { action: S.state && S.state.playing ? "stop" : "play" },
+  "Play / stop");
 $("#btn-release").onclick = () => act("/api/ui/disconnect", {}, "Release");
 $("#btn-connect").onclick = () => act("/api/ui/connect", {}, "Reconnect");
 

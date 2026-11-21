@@ -90,6 +90,16 @@ input[type="range"] { accent-color: var(--accent); width: 160px; vertical-align:
   margin-bottom: 16px; overflow: hidden;
 }
 .track-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; flex-wrap: wrap; }
+/* fold / unfold (accordion): the triangle points down when open, right when folded */
+.fold { width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--muted);
+  display: grid; place-items: center; cursor: pointer; flex: none; margin-right: -4px; }
+.fold:hover { background: var(--grid); color: var(--ink); }
+.fold:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.fold .tri { display: block; transition: transform .15s ease; }
+.track.collapsed .fold .tri { transform: rotate(-90deg); }
+.track.collapsed .track-body { display: none; }
+.track.collapsed .track-head .seg { display: none; }
+@media (prefers-reduced-motion: reduce) { .fold .tri { transition: none; } }
 .track-num {
   width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; font-weight: 700;
   background: color-mix(in srgb, var(--note) 15%, transparent); color: var(--note);
@@ -202,3 +212,7 @@ label.check { display: inline-flex; align-items: center; gap: 4px; font-size: 13
 ul.compare { margin: 0; padding-left: 18px; font-size: 13px; }
 ul.compare li.diff { color: var(--ink); }
 ul.compare li.same { color: var(--muted); }
+
+/* play / stop */
+button.play { min-width: 84px; font-variant-numeric: tabular-nums; }
+button.play.on { color: var(--accent); border-color: var(--accent); }

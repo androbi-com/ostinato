@@ -197,6 +197,21 @@ class Session:
         self.log("mix", track, f"pan {after.text} (was {before.text})", source=source)
         return before, after
 
+    def playing(self) -> bool | None:
+        t = self.backend.transport
+        return t.playing() if t is not None and t.available() else None
+
+    def set_playing(self, how: str) -> bool:
+        """"play" / "stop" / "toggle" -> playing afterwards."""
+        t = self.backend.transport
+        if t is None or not t.available():
+            raise NotSupported("this device cannot be started / stopped from here")
+        if how not in ("play", "stop", "toggle"):
+            raise ValueError(f"not play / stop / toggle: {how!r}")
+        now = t.set_playing(how)
+        self.log("transport", None, "playing" if now else "stopped")
+        return now
+
     def sounds(self, track: int) -> list[tuple[str, str]]:
         if self.backend.sounds is None:
             raise NotSupported("this device cannot change a track's sound")
@@ -374,6 +389,8 @@ class Session:
         dev = (s.data.get("device") or {}).get("backend")
         if dev and dev != b.name:
             raise S.StateError(f"the state was saved from another kind of device ({dev}), this is {b.name}")
+        if exact and self.playing():
+            raise ValueError("stop the song first: the exact copy can only be loaded while it is stopped")
         out: list[str] = []
         if backup:
             _, w = self.save_state("before apply", "the device before the last apply", exact=exact)
@@ -386,6 +403,8 @@ class Session:
                     raise S.StateError(f"the state {s.name!r} has no exact copy")
                 if not (b.states and b.states.exact_supported()):
                     raise NotSupported("this device cannot take an exact copy")
+                if self.playing():
+                    raise ValueError("stop the song first: the exact copy can only be loaded while it is stopped")
                 if set(tracks) != set(all_tracks) or (parts and set(parts) != set(b.states.parts)):
                     raise ValueError("the exact copy goes back whole: every track, every part")
                 b.states.apply_exact(blob)

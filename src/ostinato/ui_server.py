@@ -188,10 +188,11 @@ def register(mcp, manager) -> None:
         st = m.status()
         out = {"version": __version__, "status": st, "backend": m.backend_cls.title if m.backend_cls else None,
                "capabilities": st.get("capabilities", []), "log_version": 0, "tracks": [], "tempo": None,
-               "armed": [], "controls": [], "algorithms": []}
+               "armed": [], "controls": [], "algorithms": [], "playing": None}
         s = m.session
         if s is not None:
             out["log_version"] = s.version
+            out["playing"] = s.playing()
             if not s.not_ready():
                 def collect():
                     from . import generative as G
@@ -330,6 +331,19 @@ def register(mcp, manager) -> None:
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         return JSONResponse({"instrument": now, "text": f"track {t}: {now}" + (f" (was {before})" if before else "")})
+
+    @mcp.custom_route("/api/ui/transport", methods=["POST"])
+    async def transport(request: Request):
+        """{"action": "play" | "stop" | "toggle"}"""
+        s, err = session_or_error()
+        if err:
+            return err
+        d = await body(request)
+        try:
+            now = await run(s.set_playing, str(d.get("action") or "toggle"))
+        except (ValueError, RuntimeError) as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"playing": now, "text": "playing" if now else "stopped"})
 
     @mcp.custom_route("/api/ui/track/{track}/mix", methods=["POST"])
     async def mix(request: Request):

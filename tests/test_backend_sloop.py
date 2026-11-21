@@ -9,7 +9,7 @@ from ostinato.model import Event, Grid, Note, Sequence
 def test_capabilities(sloop):
     b, _ = sloop
     assert set(b.capabilities()) == {"tracks", "reader", "writer", "keys", "instruments", "tempo", "changes",
-                                     "parameters", "controls", "mixer", "sounds", "states"}
+                                     "parameters", "controls", "mixer", "sounds", "states", "transport"}
     tracks = b.tracks.list_tracks()
     assert [t.track for t in tracks] == [1, 2, 3, 4] and tracks[3].kind == "drums"  # (SLOOP says 4)
     assert b.instruments.instrument(1).startswith("ANALOG") and b.instruments.instrument(4).startswith("DRUMS")
@@ -203,3 +203,18 @@ def test_pan(sloop):
     after = b.mixer.set_pan(2, -32)
     assert after.value == -32 and after.text == "-50%"
     assert b.mixer.set_pan(2, 99).value == 63
+
+
+# ---------------------------------------------------------------- playback (LIVE)
+
+def test_play_stop_toggle(sloop):
+    b, sim = sloop
+    assert b.transport.available()
+    assert wait_for(lambda: b.transport.playing() is False, 3)  # (polled)
+    assert b.transport.set_playing("play") is True and sim.playing
+    assert "Playback: playing" in b.connection.overview()
+    assert b.transport.set_playing("toggle") is False and not sim.playing
+    sim.playing = True  # pressed PLAY on the device: noticed by the poll
+    assert wait_for(lambda: b.transport.playing() is True, 3)
+    assert any(e.kind == "transport" and e.detail["playing"] for e in b.dev.state.events)
+    assert b.transport.set_playing("stop") is False

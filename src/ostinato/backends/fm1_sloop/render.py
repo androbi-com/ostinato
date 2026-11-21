@@ -57,6 +57,10 @@ def overview(st: DeviceState) -> str:
         swing_id = st.global_id("SWING")
         sw = f", swing {st.globals[swing_id]}" if swing_id is not None else ""
         lines.append(f"Tempo {st.globals[bpm_id]} BPM{sw}")
+    if st.playing is not None:
+        lv = st.live or {}
+        lines.append("Playback: " + ("playing" if st.playing else "stopped")
+                     + (" (song mode)" if lv.get("song_mode") else ""))
     lines.append(f"Live sync: {'on' if st.watching else 'off'} ({st.sync_status}), state version {st.version}")
     used = [chr(65 + k) for k, u in enumerate(st.project_slots) if u]
     lines.append("Song sections stored: " + (" ".join(used) if used else "none"))

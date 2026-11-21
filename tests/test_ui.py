@@ -176,6 +176,20 @@ def test_states_routes(ui):
     assert st == 200
 
 
+def test_transport(ui):
+    c, _, _ = ui
+    _, s = c.json("GET", "/api/ui/state")
+    assert s["playing"] in (False, None)
+    st, r = c.json("POST", "/api/ui/transport", {"action": "play"})
+    assert st == 200 and r["playing"] is True
+    _, s = c.json("GET", "/api/ui/state")
+    assert s["playing"] is True
+    st, r = c.json("POST", "/api/ui/transport", {"action": "stop"})
+    assert st == 200 and r["playing"] is False
+    st, r = c.json("POST", "/api/ui/transport", {"action": "jump"})
+    assert st == 400
+
+
 def test_settings(ui, tmp_path):
     c, _, _ = ui
     st, r = c.json("GET", "/api/ui/setups")

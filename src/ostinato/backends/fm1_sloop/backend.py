@@ -372,6 +372,30 @@ class _Sounds(_Parts):
         return _instrument(st, t) or n
 
 
+class _Transport(_Parts):
+    """Play / stop (LIVE, v12): the play state is polled about twice a second (the device does not push it)."""
+
+    def available(self) -> bool:
+        return self.dev is not None and self.dev.live_supported()
+
+    def playing(self) -> bool | None:
+        return self.st.playing
+
+    def set_playing(self, how: str) -> bool:
+        if not self.available():
+            raise ValueError("this firmware cannot be started / stopped from here (SLOOP with protocol 12 can)")
+        code = {"stop": 0, "play": 1, "toggle": 2}[how]
+        d = self.dev.play(code)
+        if how == "play" and not d["playing"]:
+            raise ValueError("the device did not start" + (" (song mode: is the section empty?)" if d["song_mode"]
+                                                         else ""))
+        return d["playing"]
+
+    def details(self) -> dict:
+        d = self.st.live or {}
+        return {k: d.get(k) for k in ("playing", "song_mode", "song_plays", "rec_armed", "bpm")}
+
+
 class _Tempo(_Parts):
     def tempo(self) -> float | None:
         st = self.st
@@ -403,6 +427,8 @@ class _Changes(_Parts):
                 fn(DeviceEvent("reload", tr, "a sound or project was loaded", d))
             elif ev.kind in ("connected", "disconnected"):
                 fn(DeviceEvent("connection", None, ev.kind, d))
+            elif ev.kind == "transport":
+                fn(DeviceEvent("transport", None, d.get("text", ""), d))
         self.st.subscribe(relay)
 
 
@@ -498,6 +524,7 @@ on the device for the selected track only: ostinato_refresh re-reads another tra
         self.keys = _Keys(self)
         self.instruments = _Instruments(self)
         self.sounds = _Sounds(self)
+        self.transport = _Transport(self)
         from .states import SloopStates
 
         self.states = SloopStates(self)

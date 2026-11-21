@@ -206,6 +206,13 @@ class SimFM1:
             return self.lookup.get((Cmd.DESC, (1, pid)))
         if cmd in (Cmd.NAMES, Cmd.PROJECT):
             return self.lookup.get((cmd, tuple(a)))
+        if cmd == Cmd.LIVE and a and info.proto >= 12:  # op 0: the state; op 1: 0 stop, 1 play, 2 toggle
+            if a[0] == 1 and len(a) >= 2:
+                self.playing = {0: False, 1: True}.get(a[1], not self.playing)
+                self.writes.append((cmd, list(a)))
+            bpm = self.lookup.get((Cmd.DESC, (1, 0))) and self.g[0]
+            state = [1 if self.playing else 0, 0, *v14enc(bpm or 120)] + [0] * 46
+            return [a[0], *state]
         if cmd == Cmd.SET and len(a) == 4:
             scope, pid, v = a[0], a[1], P.v14dec(a[2], a[3])
             if scope == 1 and pid < len(self.g):

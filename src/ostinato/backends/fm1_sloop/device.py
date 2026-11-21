@@ -72,6 +72,8 @@ class SloopDevice:
         self._ping_fail = 0
         self.on_key: Callable[[int, int, int], None] | None = None  # (channel, note, velocity) of an FM-1 key
         self.on_param: Callable[[int, int, int | None, int], None] | None = None  # (track, id, old, new): a knob
+        self.live_every = 0.5  # s between LIVE polls (the play state is not pushed)
+        self._live_at = 0.0
         self.history: dict[int, list[dict]] = {}  # track -> undo snapshots (newest last)
         self.max_undo = 30
 
@@ -383,6 +385,35 @@ class SloopDevice:
                                source="undo", record=False)
         res["undone"] = snap["label"]
         return res
+
+    # ------------------------------------------------------------------ playback (LIVE, v12)
+    def live_supported(self) -> bool:
+        info = self.state.info
+        return bool(info and info.proto >= 12 and info.ntrk)
+
+    def live(self, reply: list[int] | None = None) -> dict:
+        """The live state (LIVE op 0, or a LIVE reply already in hand): the mirror's `playing` follows it; a change
+        is a "transport" event."""
+        if reply is None:
+            reply = self.rq(req.live_state(), timeout=0.3, retries=0)
+        d = P.parse_live(reply)
+        st = self.state
+        with st.lock:
+            was = st.playing
+            st.playing = d["playing"]
+            st.live = d
+        if was is not None and was != d["playing"]:
+            st.emit("transport", playing=d["playing"], text="playing" if d["playing"] else "stopped")
+        return d
+
+    def play(self, how: int, source: str = "server") -> dict:
+        """0 stop, 1 play, 2 toggle (as the PLAY button). -> the live state afterwards."""
+        if not self.live_supported():
+            raise NoDevice("starting / stopping needs SLOOP with the LIVE command (protocol 12)")
+        self.live(self.rq(req.live_play(how), timeout=0.5))
+        time.sleep(0.12)  # (the state in the reply may be from before the device acted)
+        self._live_at = time.monotonic()
+        return self.live()
 
     # ------------------------------------------------------------------ whole-state writes (saved states)
     def write_locks(self, t: int, locks: list[P.Lock]) -> list[str]:
@@ -793,6 +824,22 @@ class SloopDevice:
                         st.sync_status = f"waiting for device ({e})"
                 continue
             if not st.watching or st.sync_status == "reading":
+                continue
+            if self.live_supported() and time.monotonic() - self._live_at >= self.live_every:
+                # the play state is not pushed: ask (this also keeps WATCH alive, as PING would)
+                self._live_at = time.monotonic()
+                try:
+                    self.live()
+                    self._ping_fail = 0
+                except LinkTimeout:
+                    self._ping_fail += 1
+                    if self._ping_fail >= 4:
+                        log.warning("device stopped answering: disconnecting")
+                        self._ping_fail = 0
+                        self.disconnect(keep_wanted=True)
+                        st.sync_status = "lost: reconnecting"
+                except (LinkClosed, NoDevice):
+                    pass
                 continue
             gap = time.monotonic() - link.last_sent
             if gap < 1.0:

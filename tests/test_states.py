@@ -123,3 +123,15 @@ def test_protocol_encoders():
     assert cmd == P.Cmd.LOCK_SET and args == [1, 2, 3]
     assert P.req.micro_set(0, 4, -40)[1] == [0, 4, 32]
     assert P.parse_bk_get([0, 0, *P.u35enc(256), 3, 0, *P.pack7(b"abc")])["data"] == b"abc"
+
+
+def test_exact_refused_while_playing(sloop):
+    b, sim = sloop
+    s = Session(b)
+    s.save_state("y")
+    s.load_state("y")
+    s.set_playing("play")
+    with pytest.raises(ValueError, match="stop the song first"):
+        s.apply_state(exact=True)
+    assert not (ST.states_dir() / "before apply.json").exists()  # (refused before the backup)
+    s.set_playing("stop")

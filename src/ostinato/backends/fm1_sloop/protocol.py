@@ -359,6 +359,12 @@ class req:
     def live_state():
         return Cmd.LIVE, [0, 0]
 
+    @staticmethod
+    def live_play(how: int):
+        """LIVE op 1 (v12): 0 stop, 1 play, 2 as the PLAY button (play / stop). Song mode with an empty section
+        refuses (EMPTY SECTION: REC). The reply carries the live state."""
+        return Cmd.LIVE, [1, how & 3]
+
     # ---- writes (RAM only: no flash, fine while the song plays; the device pushes nothing about them)
     @staticmethod
     def track_step_set(tr: int, i: int, s: "Step"):
@@ -619,6 +625,18 @@ def parse_bk_get(a: list[int]) -> dict:
 def parse_bk_put(a: list[int]) -> dict:
     r = Reader(a)
     return {"op": r.b(), "id": r.b(), "rc": r.b() if r.left else 0}
+
+
+def parse_live(a: list[int]) -> dict:
+    """LIVE reply: op, then the live state (50 bytes; early 2.7 builds 32). Its first bytes: flags (bit 0 playing,
+    1 PLAY asked, 2 song mode, 3 the song plays, 4 fill now, 5 fill next bar, 6 SONG REC), flags 2 (bit 0 REC armed,
+    1 undo there, 2 redo there), BPM (v14). -> the fields read, and the raw state."""
+    st = list(a[1:])
+    f = st[0] if st else 0
+    f2 = st[1] if len(st) > 1 else 0
+    return {"op": a[0] if a else None, "playing": bool(f & 1), "play_asked": bool(f & 2), "song_mode": bool(f & 4),
+            "song_plays": bool(f & 8), "rec_armed": bool(f2 & 1),
+            "bpm": v14dec(st[2], st[3]) if len(st) > 3 else None, "raw": st}
 
 
 def parse_track_mix(a: list[int]) -> dict:

@@ -8,6 +8,7 @@ session; nothing here knows a firmware.
     parameters:            ostinato_parameters
     mixer:                 ostinato_mute_track, ostinato_set_level
     sounds:                ostinato_instruments, ostinato_set_instrument
+    transport:             ostinato_play
     reader (states):       ostinato_save_state, ostinato_list_states, ostinato_load_state, ostinato_show_state,
                            ostinato_delete_state; + writer: ostinato_apply_state
     writer (+ reader):     ostinato_write_notes, ostinato_write_midi, ostinato_clear_track, ostinato_undo,
@@ -363,6 +364,25 @@ def register(mcp, session) -> list[str]:
             except ValueError as ex:
                 return f"Sound not changed: {ex}"
             return f"Track {track} is now {now}" + (f" (was {before})." if before else ".")
+
+    # ------------------------------------------------------------------ playback
+    if b.transport is not None:
+        @tool(WRITE)
+        async def ostinato_play(action: Literal["play", "stop", "toggle", "status"] = "play") -> str:
+            """Start or stop the device's playback (as its PLAY button): "play", "stop", "toggle", or "status"
+            (only say whether it plays). Some firmware cannot be driven from here (SLOOP needs protocol 12)."""
+            if (e := ready()):
+                return e
+            if action == "status":
+                p = session.playing()
+                d = b.transport.details() if b.transport.available() else {}
+                return ("Not known (this firmware does not report it)." if p is None else
+                        ("Playing" if p else "Stopped") + (" (song mode)" if d.get("song_mode") else "") + ".")
+            try:
+                now = await _run(session.set_playing, action)
+            except (ValueError, RuntimeError) as ex:
+                return f"Not changed: {ex}"
+            return "Playing." if now else "Stopped."
 
     # ------------------------------------------------------------------ saved states
     if b.reader is not None:

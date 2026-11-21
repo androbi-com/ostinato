@@ -19,6 +19,7 @@ part names, without `keys` no key signature, without `writer` the writing tools 
 | mixer         | TrackMixer       | read / set a track's mute state, level and pan             |
 | sounds        | SoundSelector    | the sounds a track can take (presets, kits) and set one    |
 | states        | StateStore       | the device's whole state as data (saved states), and back  |
+| transport     | TransportControl | play / stop, and whether it plays                          |
 
 A backend that can be found on the MIDI ports (a hardware device) also has a `probe`; one that cannot (e.g. a DAW)
 is chosen by configuration. Extra tools only one backend has come from `extra_tools()`.
@@ -92,6 +93,13 @@ class SoundSelector(Protocol):
     def set_sound(self, track: int, name: str, group: str | None = None) -> str: ...  # -> the track's sound now
 
 
+class TransportControl(Protocol):
+    def available(self) -> bool: ...  # (the connected firmware can be started / stopped)
+    def playing(self) -> bool | None: ...  # None: not known
+    def set_playing(self, how: str) -> bool: ...  # "play" / "stop" / "toggle" -> playing afterwards
+    def details(self) -> dict: ...  # e.g. song mode, as the device reports it
+
+
 class StateStore(Protocol):
     """Everything the backend knows of the device, as JSON-able data, and writing it back (ostinato.states keeps
     it in files next to the generic part)."""
@@ -141,6 +149,7 @@ class Backend:
     mixer: TrackMixer | None = None
     sounds: SoundSelector | None = None
     states: StateStore | None = None
+    transport: TransportControl | None = None
 
     # ---- detection (hardware backends)
     @classmethod
@@ -162,7 +171,7 @@ class Backend:
 
     def capabilities(self) -> list[str]:
         return [n for n in ("tracks", "reader", "writer", "keys", "instruments", "tempo", "changes", "parameters",
-                            "controls", "mixer", "sounds", "states") if getattr(self, n) is not None]
+                            "controls", "mixer", "sounds", "states", "transport") if getattr(self, n) is not None]
 
     def setups(self) -> list:
         """The backend's own JSON setups (ostinato.setup.Setup subclasses), for settings forms."""

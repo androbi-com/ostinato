@@ -65,6 +65,8 @@ class DeviceState:
         self.events: deque[ChangeEvent] = deque(maxlen=max_events)
         self.last_full_read: float = 0.0
         self.sync_status: str = "idle"
+        self.playing: bool | None = None  # (LIVE, v12; None: not known)
+        self.live: dict = {}  # the last LIVE state (protocol.parse_live)
         self.errors: deque[str] = deque(maxlen=20)
         self._listeners: list[Callable[[ChangeEvent], None]] = []
 
