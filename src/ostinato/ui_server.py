@@ -203,7 +203,8 @@ def register(mcp, manager) -> None:
 
                         tracks.append({"track": t.track, "name": t.name, "kind": t.kind, "instrument": t.instrument,
                                        "key": SC.key_name(k) if k and k.scale != "chromatic" else None,
-                                       "undo": s.undo_depth(t.track)})
+                                       "undo": s.undo_depth(t.track),
+                                       "muted": s.track_muted(t.track) if s.backend.mixer else None})
                     eng = s.engine
                     armed = [{"track": a.track, "algorithm": a.algorithm, "control": a.source, "kind": a.kind,
                               "runs": a.runs, "depth": a.depth, "last": a.last, "warnings": a.warnings}
@@ -286,6 +287,20 @@ def register(mcp, manager) -> None:
         except (KeyError, ValueError) as e:
             return JSONResponse({"error": str(e)}, status_code=400)
 
+    @mcp.custom_route("/api/ui/track/{track}/mute", methods=["POST"])
+    async def mute(request: Request):
+        s, err = session_or_error()
+        if err:
+            return err
+        d = await body(request)
+        try:
+            needs(s, "mixer")
+            t = track_arg(request, s)
+            muted = await run(s.set_track_muted, t, bool(d.get("muted", True)))
+            return JSONResponse({"muted": muted, "text": f"track {t} {'muted' if muted else 'unmuted'}"})
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+
     @mcp.custom_route("/api/ui/track/{track}/undo", methods=["POST"])
     async def undo(request: Request):
         s, err = session_or_error()
@@ -297,6 +312,20 @@ def register(mcp, manager) -> None:
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         return JSONResponse({"text": f"undid {label}" if label else "nothing to undo"})
+
+    @mcp.custom_route("/api/ui/track/{track}/clear", methods=["POST"])
+    async def clear(request: Request):
+        s, err = session_or_error()
+        if err:
+            return err
+        d = await body(request)
+        try:
+            needs(s, "writer")
+            rep, removed, what = await run(s.clear, track_arg(request, s), bool(d.get("keep_length", True)),
+                                           d.get("note_only") or None)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"text": f"cleared {what}: {removed} note(s) removed"})
 
     @mcp.custom_route("/api/ui/track/{track}/arm", methods=["POST"])
     async def arm(request: Request):

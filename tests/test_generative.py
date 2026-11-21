@@ -75,6 +75,42 @@ def test_swapper_borrows_and_falls_back(cfgdir):
     assert len([s for s in res.summary if "->" in s]) >= 3  # (intensity 4, gain 1: 4 notes)
 
 
+def test_random_initializer_replaces_sequence_with_scale_notes(cfgdir):
+    cls = G.get("random_initializer")
+    cfg = cls.load_config({
+        "density": 0.5,
+        "note_range": {"low": 57, "high": 72},
+        "length_steps": {"min": 1, "max": 3},
+    }).values
+    key = Key(0, "major")
+    base = line()
+    before = base.copy()
+    first = cls(cfg).apply(G.GenContext(1, base.copy(), key, {1: key}, random.Random(7)))
+    second = cls(cfg).apply(G.GenContext(1, base.copy(), key, {1: key}, random.Random(7)))
+    assert first.seq.events == second.seq.events  # (the supplied RNG seed makes the result repeatable)
+    assert first.seq.length == before.length and first.seq.grid == before.grid
+    assert len(first.seq.events) == 8
+    assert all(57 <= n.pitch <= 72 and SC_in(key, n.pitch) for e in first.seq.events for n in e.notes)
+    assert all(Fraction(1, 4) <= e.length <= Fraction(3, 4) for e in first.seq.events)
+    assert first.seq.events != before.events and "initialized 8 of 16" in first.summary[0]
+
+
+def test_random_initializer_borrows_scale_and_handles_empty_density(cfgdir):
+    cls = G.get("random_initializer")
+    cfg = cls.load_config({
+        "density": 0.75,
+        "note_range": {"low": 48, "high": 60},
+        "scale_source": 2,
+    }).values
+    key = Key(9, "natural minor")
+    result = cls(cfg).apply(G.GenContext(1, line(), Key(0, "chromatic"), {2: key}, random.Random(2)))
+    assert "borrowed from track 2" in result.scale_note
+    assert all(SC_in(key, n.pitch) for e in result.seq.events for n in e.notes)
+    empty = cls(cls.load_config({"density": 0}).values).apply(
+        G.GenContext(1, line(), key, {1: key}, random.Random(2)))
+    assert empty.seq.events == [] and empty.summary == ["initialized 0 of 16 steps (density 0.00)"]
+
+
 # ---------------------------------------------------------------- session + engine on SLOOP
 
 def test_run_and_undo(sloop):
@@ -87,6 +123,75 @@ def test_run_and_undo(sloop):
     assert s.undo(1) == "melodic_swapper"
     assert [list(x.active_notes) for x in sim.tracks[0]["steps"][:16]] == before
     assert s.undo(1) is None
+
+
+def test_clear_track_and_undo(sloop):
+    b, sim = sloop
+    s = Session(b)
+    before = s.read(1)
+    assert before.events
+    rep, removed, what = s.clear(1)
+    after = s.read(1)
+    assert rep.changed and removed == sum(len(e.notes) for e in before.events) and what == "all notes"
+    assert not after.events and after.grid.steps == before.grid.steps and after.grid.name == before.grid.name
+    assert all(not x.active_notes for x in sim.tracks[0]["steps"][:16])
+    assert s.clear(1)[0].changed == 0 and s.undo_depth(1) == 1  # (already empty: no extra undo step)
+    assert s.undo(1) == "clear all notes"
+    assert [e.pitches for e in s.read(1).events] == [e.pitches for e in before.events]
+
+
+def test_clear_track_reset_length(sloop):
+    b, sim = sloop
+    s = Session(b)
+    b.writer.write(2, Sequence("melodic", Fraction(16), [Event(Fraction(k), Fraction(1, 2), [Note(64)])
+                                                         for k in range(16)], Grid(Fraction(1, 2), 32, "1/8")))
+    rep, _, _ = s.clear(2, keep_length=False)
+    seq = s.read(2)
+    assert rep.length_changed and not seq.events and seq.grid.name == "1/16" and seq.grid.steps == 16
+
+
+def test_clear_only_one_note(sloop):
+    b, sim = sloop
+    s = Session(b)
+    b.writer.write(3, Sequence("chords", Fraction(4), [
+        Event(Fraction(0), Fraction(1, 4), [Note(57), Note(60), Note(64)]),
+        Event(Fraction(1), Fraction(1, 4), [Note(57)]),
+        Event(Fraction(2), Fraction(1, 4), [Note(62)]),
+    ], Grid(Fraction(1, 4), 16, "1/16")))
+    rep, removed, what = s.clear(3, note_only="A3")
+    assert removed == 2 and what == "A3"
+    assert [e.pitches for e in s.read(3).events] == [[60, 64], [62]]
+    assert s.clear(3, note_only="A3")[1] == 0
+    with pytest.raises(ValueError):
+        s.clear(3, note_only="H9")
+    assert s.undo(3) == "clear A3" and [e.pitches for e in s.read(3).events] == [[57, 60, 64], [57], [62]]
+
+
+def test_clear_one_drum_lane(sloop):
+    b, sim = sloop
+    s = Session(b)
+    before = s.read(4)
+    hats = sum(42 in e.pitches for e in before.events)
+    assert hats
+    rep, removed, what = s.clear(4, note_only="hihat")
+    after = s.read(4)
+    assert removed == hats and what == "HAT" and rep.changed
+    assert not any(42 in e.pitches for e in after.events)
+    assert [sorted(p for p in e.pitches if p != 42) for e in before.events if set(e.pitches) - {42}] == \
+        [sorted(e.pitches) for e in after.events]
+    with pytest.raises(ValueError):
+        s.clear(4, note_only="TAMBOURINE")  # (a GM voice SLOOP has no lane for)
+
+
+def test_clear_refused_while_armed(sloop):
+    b, sim = sloop
+    s = Session(b)
+    s.engine.arm(1, "melodic_swapper", "keys")
+    try:
+        with pytest.raises(ValueError, match="disarm"):
+            s.clear(1)
+    finally:
+        s.engine.disarm(1)
 
 
 def test_generative_mode_knob(sloop):
@@ -181,7 +286,8 @@ def test_tools_follow_the_capabilities(cfgdir):
     mcp = MCPServer("t")
     names = set(T.register(mcp, s))
     assert {"ostinato_show_track", "ostinato_show_staff", "ostinato_write_notes", "ostinato_undo", "ostinato_generate"} <= names
-    assert not names & {"ostinato_scales", "ostinato_parameters", "ostinato_generative_mode", "ostinato_link_info"}
+    assert not names & {"ostinato_scales", "ostinato_parameters", "ostinato_generative_mode", "ostinato_mute_track",
+                        "ostinato_link_info"}
 
     async def call(name, **kw):
         res = await mcp.call_tool(name, kw)
@@ -206,3 +312,4 @@ def test_tools_on_sloop(sloop):
     s = Session(b)
     names = set(T.register(MCPServer("t"), s))
     assert {"ostinato_scales", "ostinato_parameters", "ostinato_generative_mode", "ostinato_link_info"} <= names
+    assert "ostinato_mute_track" in names

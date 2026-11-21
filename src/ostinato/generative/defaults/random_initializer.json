@@ -1,0 +1,84 @@
+{
+  "_doc": "random_initializer: replaces a sequence with random notes in the track's scale, or a borrowed scale. Copy this file to your setup folder and change any value; keys starting with _ are comments.",
+  "density": 0.5,
+  "_density": "Share of the sequence's steps that receive a note. 0 produces an empty sequence; 1 fills every step.",
+  "intensity_gain": 0.1,
+  "_intensity_gain": "A longer knob turn adds this much density per intensity level beyond the first.",
+  "scale_source": "auto",
+  "_scale_source": "\"own\": the track's scale; \"auto\": its own, or borrowed from the first other track with a scale; or a track number to borrow from.",
+  "fallback_scale": "chromatic",
+  "_fallback_scale": "No scale on any track: \"pattern\" infers one from existing notes (if possible), or \"chromatic\" permits all pitch classes.",
+  "note_range": {
+    "low": 60,
+    "high": 78
+  },
+  "_note_range": "Inclusive MIDI pitch range for generated notes (60 is C4).",
+  "max_leap": 12,
+  "_max_leap": "Largest interval in semitones from the preceding generated note, when the scale and range allow it.",
+  "avoid_repeat": true,
+  "_avoid_repeat": "Avoid repeating the preceding pitch, when another nearby in-scale note is available.",
+  "length_steps": {
+    "min": 1,
+    "max": 2
+  },
+  "_length_steps": "Inclusive note-length range in sequence steps. A note is shortened before the next occupied step.",
+  "polyphony": 0.0,
+  "_polyphony": "On chord tracks, chance to add a scale-note third or fifth above the main note.",
+  "seed": null,
+  "_seed": "null: different every time; a number: repeatable results.",
+  "_ui": {
+    "choices": {
+      "scale_source": [
+        "auto",
+        "own",
+        "#track"
+      ],
+      "fallback_scale": [
+        "pattern",
+        "chromatic"
+      ]
+    },
+    "ranges": {
+      "density": [
+        0,
+        1,
+        0.05
+      ],
+      "intensity_gain": [
+        0,
+        1,
+        0.05
+      ],
+      "note_range.low": [
+        0,
+        127,
+        1
+      ],
+      "note_range.high": [
+        0,
+        127,
+        1
+      ],
+      "max_leap": [
+        1,
+        127,
+        1
+      ],
+      "length_steps.min": [
+        1,
+        16,
+        1
+      ],
+      "length_steps.max": [
+        1,
+        16,
+        1
+      ],
+      "polyphony": [
+        0,
+        1,
+        0.05
+      ]
+    }
+  }
+}

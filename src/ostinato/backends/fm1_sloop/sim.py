@@ -181,6 +181,8 @@ class SimFM1:
             if dd and dd.max > dd.min:
                 v = max(dd.min, min(dd.max, v))
             self.tracks[tr]["p"][pid] = v
+            if dd and dd.label == "MUTE":
+                self.tracks[tr]["mute"] = int(bool(v))
             self.writes.append((cmd, list(a)))
             return [tr, pid, *v14enc(v)]
         if cmd == Cmd.STEP_GET:

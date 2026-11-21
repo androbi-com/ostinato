@@ -9,8 +9,10 @@
 - **Upload note data:** write simple JSON notes or a standard MIDI file to a track, replacing or merging with the existing sequence.
 - **Inspect musical information:** view tracks and instruments, keys and scales, pattern notes, tempo, parameters, and MIDI port status.
 - **Analyze structured sequences:** retrieve per-event start, length, pitches, velocity, articulation, ratchets, and backend-specific data.
-- **Edit existing sequences:** run generative algorithms directly on a track and undo writes or algorithm runs one step at a time.
-- **Generate variations:** use `melodic_swapper`, `art_mutate`, `art_spice`, or `art_dice` to alter melodic, chord, or drum sequences.
+- **Mute tracks:** mute or unmute individual SLOOP tracks from the browser UI or through MCP without changing their notes.
+- **Edit existing sequences:** run generative algorithms directly on a track, clear a track (all notes, or just one note or drum lane), and undo writes, clears or algorithm runs one step at a time.
+- **Generate variations and patterns:** use `random_initializer` to create a scale-constrained sequence, or
+  `melodic_swapper`, `art_mutate`, `art_spice`, and `art_dice` to alter melodic, chord, or drum sequences.
 - **Arm generative mode:** use supported device controls such as a knob or buttons to vary a track, undo runs, or restore the sequence from before arming.
 - **Follow live changes:** refresh device sequences and inspect a change log of device edits, writes, algorithm runs, restores, and connection events.
 - **Control and monitor locally:** connect or disconnect the device, monitor its status, and use the browser UI for tracks, staff views, generation, undo, settings, and activity.
@@ -25,9 +27,10 @@ Clone this repository:
 ```bash
 git clone https://github.com/androbi-com/ostinato.git
 cd ostinato
+uv sync
 ```
 
-Requires [uv](https://docs.astral.sh/uv/). Install it if you haven't already.
+Requires [uv](https://docs.astral.sh/uv/). Install it if you haven't already, then run `uv sync` to create the local environment and install Ostinato and its dependencies. Repeat `uv sync` after pulling dependency or project changes.
 
 ### 2. Connect your FM-1
 
@@ -39,7 +42,7 @@ Requires [uv](https://docs.astral.sh/uv/). Install it if you haven't already.
 Open a terminal and run:
 
 ```bash
-uv run --directory C:\path\to\ostinato-mcp ostinato-device
+uv run ostinato-device
 ```
 
 You'll see output indicating the device is connected and ready. The server runs at `http://127.0.0.1:5317`.
@@ -49,14 +52,14 @@ You'll see output indicating the device is connected and ready. The server runs 
 In another terminal, run:
 
 ```bash
-uv run --directory C:\path\to\ostinato-mcp ostinato-device ui
+uv run ostinato-device ui
 ```
 
 This opens the device server's web interface in your browser, showing your tracks, the step sequencer, and live edits.
 
 ## Using with Claude
 
-To use Ostinato with Claude Desktop or VS Code (Copilot), you need to configure the MCP server.
+To use Ostinato with Claude Desktop you need to configure the MCP server.
 
 ### Setup for Claude Desktop
 
@@ -98,9 +101,15 @@ Here are some example prompts to try:
 **Edit with undo:**
 > "Write a new drum pattern to track 4, then undo it and write a different one."
 
+**Clear a track:**
+> "Clear track 2." / "Remove every A3 from track 1." / "Take the hi-hats out of the drums."
+
+**Mute a track:**
+> "Mute track 2." / "Unmute track 2."
+
 ## For More Details
 
-For technical documentation, architecture details, backend information, and advanced configuration, see [README_TECHNICAL.md](README_TECHNICAL.md).
+For technical documentation, architecture details, backend information, and advanced configuration, see [README_TECHNICAL.md](README_TECHNICAL.md). The [generative algorithm reference](ALGORITHMS.md) documents all implemented algorithms and their parameters.
 
 ## Troubleshooting
 

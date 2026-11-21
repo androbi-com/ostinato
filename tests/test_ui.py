@@ -69,7 +69,8 @@ def test_state_tracks_staff(ui):
     c, _, _ = ui
     st, s = c.json("GET", "/api/ui/state")
     assert st == 200 and s["backend"].startswith("FM-1 with SLOOP") and len(s["tracks"]) == 4
-    assert "writer" in s["capabilities"] and {x["name"] for x in s["controls"]} == {"knob", "keys"}
+    assert {"writer", "mixer"} <= set(s["capabilities"]) and {x["name"] for x in s["controls"]} == {"knob", "keys"}
+    assert all(t["muted"] is False for t in s["tracks"])
     assert s["algorithms"][0]["name"] == "melodic_swapper"
     st, t = c.json("GET", "/api/ui/track/1")
     assert st == 200 and t["grid"]["steps"] == 16 and t["events"][0]["notes"][0]["name"] == "A2"
@@ -100,6 +101,31 @@ def test_generate_undo_arm(ui):
     assert st == 200 and "restored" in r["text"]
     _, lg = c.json("GET", "/api/ui/log?since=0")
     assert {"generate", "armed", "disarmed"} <= {e["kind"] for e in lg["events"]}
+
+
+def test_clear(ui):
+    c, _, _ = ui
+    _, before = c.json("GET", "/api/ui/track/1")
+    assert before["events"]
+    st, r = c.json("POST", "/api/ui/track/1/clear", {})
+    assert st == 200 and "cleared all notes" in r["text"]
+    _, after = c.json("GET", "/api/ui/track/1")
+    assert not after["events"]
+    c.json("POST", "/api/ui/track/1/undo", {})
+    st, r = c.json("POST", "/api/ui/track/4/clear", {"note_only": "HAT"})
+    assert st == 200 and "cleared HAT" in r["text"]
+    st, r = c.json("POST", "/api/ui/track/1/clear", {"note_only": "nope"})
+    assert st == 400
+
+
+def test_mute_track(ui):
+    c, _, _ = ui
+    st, r = c.json("POST", "/api/ui/track/2/mute", {"muted": True})
+    assert st == 200 and r["muted"] and "muted" in r["text"]
+    _, state = c.json("GET", "/api/ui/state")
+    assert next(t for t in state["tracks"] if t["track"] == 2)["muted"] is True
+    st, r = c.json("POST", "/api/ui/track/2/mute", {"muted": False})
+    assert st == 200 and not r["muted"]
 
 
 def test_settings(ui, tmp_path):

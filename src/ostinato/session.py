@@ -13,7 +13,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
-from .model import DeviceEvent, Key, Sequence, TrackInfo, WriteReport
+from .model import DeviceEvent, Grid, Key, Sequence, TrackInfo, WriteReport
 
 MAX_UNDO = 30
 
@@ -99,6 +99,20 @@ class Session:
     def tempo(self) -> float | None:
         return self.backend.tempo.tempo() if self.backend.tempo else None
 
+    def track_muted(self, track: int) -> bool:
+        if self.backend.mixer is None:
+            raise NotSupported("this device cannot mute tracks")
+        self.track_info(track)
+        return self.backend.mixer.muted(track)
+
+    def set_track_muted(self, track: int, muted: bool) -> bool:
+        if self.backend.mixer is None:
+            raise NotSupported("this device cannot mute tracks")
+        self.track_info(track)
+        actual = self.backend.mixer.set_muted(track, muted)
+        self.log("mute", track, f"track {'muted' if actual else 'unmuted'}")
+        return actual
+
     # ---------------------------------------------------------- writing, undo
     def write(self, track: int, seq: Sequence, label: str, source: str = "server", key: Key | None = None,
               record: bool = True) -> WriteReport:
@@ -124,6 +138,59 @@ class Session:
             label, seq = h.pop()
             self.write(track, seq, f"undo {label}", source="undo", record=False)
             return label
+
+    def clear(self, track: int, keep_length: bool = True, note_only: str | int | None = None,
+              source: str = "server") -> tuple[WriteReport, int, str]:
+        """Remove the notes of a track (ostinato_undo / undo() put them back).
+
+        keep_length: keep the pattern's length and step length (else: one bar of the default step length).
+        note_only: remove only this note ("A3", 57), every occurrence; on a drum track a drum sound ("HAT", "KICK",
+          a GM note): its lane. The length is then always kept.
+        -> (the write report, the notes removed, what was cleared: "all notes" / "A3" / "HAT")."""
+        from .music import notes_io as NIO
+        from .music.scales import note_name
+
+        if self.backend.writer is None:
+            raise NotSupported("this device cannot be written to")
+        if self.engine is not None and track in self.engine.armed:
+            raise ValueError(f"generative mode is armed on track {track}: disarm it first")
+        with self._lock:
+            seq = self.read(track)
+            new = seq.copy()
+            if note_only is not None:
+                if seq.kind == "drums":
+                    names = self.backend.writer.limits(track).drum_voices
+                    pitch = NIO.parse_drum(note_only, names)
+                    if names is not None and pitch not in names:
+                        raise ValueError(f"this drum track has no {note_only!r} lane")
+                    what = (names or {}).get(pitch) or str(note_only)
+                else:
+                    pitch = NIO.parse_pitch(note_only)
+                    what = note_name(pitch)
+                removed = 0
+                kept = []
+                for e in new.events:
+                    left = [n for n in e.notes if n.pitch != pitch]
+                    removed += len(e.notes) - len(left)
+                    if left:
+                        e.notes = left
+                        kept.append(e)
+                    elif not e.notes:
+                        kept.append(e)  # (an event without notes was there before: not ours to drop)
+                new.events = kept
+            else:
+                what = "all notes"
+                removed = sum(len(e.notes) for e in seq.events)
+                new.events = []
+                if not keep_length and seq.grid is not None:
+                    grids = self.backend.writer.limits(track).grids
+                    name = "1/16" if "1/16" in grids else seq.grid.name
+                    step = grids.get(name, seq.grid.step)
+                    steps = max(1, int(4 / step))
+                    new.grid = Grid(step, steps, name)
+                    new.length = step * steps
+            report = self.write(track, new, f"clear {what}", source=source)
+        return report, removed, what
 
     def undo_depth(self, track: int) -> int:
         return len(self.history.get(track, []))

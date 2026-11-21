@@ -6,7 +6,9 @@ session; nothing here knows a firmware.
                            ostinato_track_data, ostinato_refresh, ostinato_changes
     keys (+ reader):       ostinato_scales
     parameters:            ostinato_parameters
-    writer (+ reader):     ostinato_write_notes, ostinato_write_midi, ostinato_undo, ostinato_generators, ostinato_generate
+    mixer:                 ostinato_mute_track
+    writer (+ reader):     ostinato_write_notes, ostinato_write_midi, ostinato_clear_track, ostinato_undo,
+                           ostinato_generators, ostinato_generate
     + controls:            ostinato_generative_mode
 The device server's own tools (ostinato_status, ostinato_connect, ostinato_disconnect, ostinato_list_midi_ports) are in device_server.
 """
@@ -265,6 +267,16 @@ def register(mcp, session) -> list[str]:
                 return e
             return await _run(b.parameters.parameters, track, only_changed)
 
+    # ------------------------------------------------------------------ mixer
+    if b.mixer is not None:
+        @tool(WRITE)
+        async def ostinato_mute_track(track: int, muted: bool = True) -> str:
+            """Mute or unmute one track without changing its notes. muted: true mutes it, false unmutes it."""
+            if (e := ready(track)):
+                return e
+            actual = await _run(session.set_track_muted, track, muted)
+            return f"Track {track} is {'muted' if actual else 'unmuted'}."
+
     # ------------------------------------------------------------------ writing
     if b.writer is not None and b.reader is not None:
         def write_notes(track, notes_json, unit, div, mode, length, start_at, label, beats_only=False):
@@ -332,6 +344,26 @@ def register(mcp, session) -> list[str]:
                 return f"No such file: {path}"
             except (NIO.NotesError, ValueError, OSError, EOFError) as ex:
                 return f"Nothing written: {ex}"
+
+        @tool(WRITE)
+        async def ostinato_clear_track(track: int, keep_length: bool = True, note_only: str | None = None) -> str:
+            """Clear a track: remove all its notes; ostinato_undo reverts.
+
+            keep_length: keep the pattern's length and step length (default); false: back to one bar of 1/16.
+            note_only: remove only this note, wherever it occurs (e.g. "A3", "F#2", "57"); in chords only that note
+              goes. On a drum track it names the lane to empty: "HAT", "KICK", "SNARE", "OPEN HAT", "CLAP"... (or a
+              GM note). With note_only the length is always kept.
+            Refused while generative mode is armed on the track (disarm it first)."""
+            if (e := ready(track)):
+                return e
+            try:
+                rep, removed, what = await _run(session.clear, track, keep_length, note_only)
+            except (NIO.NotesError, ValueError) as ex:
+                return f"Nothing cleared: {ex}"
+            if not rep.changed and not rep.length_changed and not rep.grid_changed:
+                return f"Track {track}: nothing to clear ({what})."
+            return (f"Cleared {what} on track {track}: {removed} note(s) removed, {rep.changed} step(s) changed. "
+                    "Undo with ostinato_undo.\n\n" + await _run(show, track, "list"))
 
         @tool(WRITE)
         async def ostinato_undo(track: int) -> str:

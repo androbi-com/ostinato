@@ -112,7 +112,7 @@ input[type="range"] { accent-color: var(--accent); width: 160px; vertical-align:
 
 .track-actions {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 16px 14px;
-  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
 }
 .track-actions .group { display: flex; align-items: center; gap: 6px; }
 .track-actions .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }

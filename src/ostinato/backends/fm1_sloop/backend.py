@@ -361,6 +361,23 @@ class _Parameters(_Parts):
             return R.track_params(st, self.t0(track), include_defaults=not only_changed)
 
 
+class _Mixer(_Parts):
+    def muted(self, track: int) -> bool:
+        with self.st.lock:
+            return bool(self.st.tracks[self.t0(track)].mute)
+
+    def set_muted(self, track: int, muted: bool) -> bool:
+        t = self.t0(track)
+        st = self.st
+        pid = st.param_id("MUTE", default=40)
+        with st.lock:
+            if pid is None or pid >= len(st.tracks[t].params):
+                raise ValueError("this SLOOP firmware has no track mute parameter")
+        value = self.dev.write_track(t, params={pid: int(bool(muted))}, label=f"{'mute' if muted else 'unmute'} track",
+                                     source="server", record=False)["params"][pid]
+        return bool(value)
+
+
 # ---------------------------------------------------------------------- the backend
 
 class SloopBackend(Backend):
@@ -386,6 +403,7 @@ on the device for the selected track only: ostinato_refresh re-reads another tra
         self.changes = _Changes(self)
         self.parameters = _Parameters(self)
         self.controls = SloopControls(self)
+        self.mixer = _Mixer(self)
         self._stopped = threading.Lock()
 
     @classmethod

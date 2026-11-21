@@ -16,6 +16,7 @@ part names, without `keys` no key signature, without `writer` the writing tools 
 | changes       | ChangeFeed       | notices of edits made on the device                        |
 | parameters    | ParameterInfo    | named parameters with their values                         |
 | controls      | ControlInputs    | knobs / buttons usable as triggers (generative mode)       |
+| mixer         | TrackMixer       | read / set a track's mute state                            |
 
 A backend that can be found on the MIDI ports (a hardware device) also has a `probe`; one that cannot (e.g. a DAW)
 is chosen by configuration. Extra tools only one backend has come from `extra_tools()`.
@@ -75,6 +76,11 @@ class ParameterInfo(Protocol):
     def parameters(self, track: int | None, only_changed: bool = False) -> str: ...  # track None: the globals
 
 
+class TrackMixer(Protocol):
+    def muted(self, track: int) -> bool: ...
+    def set_muted(self, track: int, muted: bool) -> bool: ...  # -> the state reported by the device
+
+
 class ControlHandle(Protocol):
     def close(self) -> None: ...  # stop listening, put the control back as it was
     warnings: list[str]
@@ -108,6 +114,7 @@ class Backend:
     changes: ChangeFeed | None = None
     parameters: ParameterInfo | None = None
     controls: ControlInputs | None = None
+    mixer: TrackMixer | None = None
 
     # ---- detection (hardware backends)
     @classmethod
@@ -129,7 +136,7 @@ class Backend:
 
     def capabilities(self) -> list[str]:
         return [n for n in ("tracks", "reader", "writer", "keys", "instruments", "tempo", "changes", "parameters",
-                            "controls") if getattr(self, n) is not None]
+                            "controls", "mixer") if getattr(self, n) is not None]
 
     def setups(self) -> list:
         """The backend's own JSON setups (ostinato.setup.Setup subclasses), for settings forms."""

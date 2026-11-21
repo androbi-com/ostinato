@@ -62,6 +62,7 @@ names; no key: no key signature, sharps; no writer: no writing tools).
 | `changes` | notices of edits made on the device | yes (pushes) |
 | `parameters` | named parameters with values | yes |
 | `controls` | knobs / buttons usable as triggers (generative mode) | the PHS knob, the keys |
+| `mixer` | read and set a track's mute state | yes |
 
 An external MIDI controller would be another implementation of `controls` (interface only for now). A hardware
 backend also has `probe` (found on the MIDI ports); one that cannot be found that way (e.g. a DAW) would be chosen by
@@ -138,6 +139,7 @@ All named `ostinato_*`; tracks are numbered from 1, notes with 60 = C4.
 | `ostinato_refresh`, `ostinato_changes` | reader | Re-read from the device; the change log (device edits, writes, runs, undos) |
 | `ostinato_scales` | keys | Key, scale notes, the device's key settings, notes outside the scale; the scales it offers |
 | `ostinato_parameters` | parameters | A track's parameters or the globals |
+| `ostinato_mute_track` | mixer | Mute or unmute one track without changing its sequence |
 | `ostinato_write_notes`, `ostinato_write_midi` | writer | JSON notes / a .mid file onto a track, fitted to the device's limits (what was adapted is reported) |
 | `ostinato_undo` | writer | Undo the last write to a track (up to 30) |
 | `ostinato_generators`, `ostinato_generate` | writer | The algorithms and their setups; run one now |
@@ -160,6 +162,11 @@ the track's own key or, on a chromatic track, borrowed from another track (`scal
 no key at all, the pitch classes of the pattern. New notes stay near the pattern's range (`range`) and the previous
 note (`max_leap`, `motion`), favouring root / third / fifth (`tone_weights`); before a root or third, with
 `transition.probability`, a chromatic approach note.
+
+**random_initializer** replaces a sequence with random notes on its existing grid. `density` controls how many
+steps receive notes, `note_range` and `length_steps` constrain pitch and gate lengths, and `max_leap` shapes the
+line. Notes stay in the track's scale or a borrowed scale (`scale_source`); chord tracks can stack an in-scale third
+or fifth (`polyphony`).
 
 **art_mutate, art_spice, art_dice** rebuild the generative functions of a well-known keyboard step sequencer
 (`generative/art.py`):

@@ -61,7 +61,7 @@ async function act(path, body, label) {
 // ---------------------------------------------------------------- state
 const S = {
   state: null, logVersion: -1, tracksKey: "", views: {}, data: {}, lastLog: 0, setupsShown: false,
-  algoChoice: {}, controlChoice: {},
+  algoChoice: {}, controlChoice: {}, actionsKeys: {},
 };
 
 function can(cap) { return S.state && S.state.capabilities.includes(cap); }
@@ -113,6 +113,7 @@ function renderHeader(st) {
 function buildTracks(st) {
   const box = $("#tracks");
   box.replaceChildren();
+  S.actionsKeys = {};
   for (const t of st.tracks) {
     if (!S.views[t.track]) S.views[t.track] = "roll";
     const card = h("article", { class: "track " + t.kind, id: "track-" + t.track },
@@ -122,13 +123,14 @@ function buildTracks(st) {
         h("span", { class: "tag", text: t.kind }),
         h("span", { class: "tag key", "data-role": "key", hidden: !t.key, text: t.key || "" }),
         h("span", { class: "tag", "data-role": "grid" }),
+        h("span", { class: "tag", "data-role": "muted", hidden: true, text: "MUTED" }),
         h("span", { class: "spacer" }),
         h("div", { class: "seg", role: "group" },
           h("button", { "aria-pressed": S.views[t.track] === "roll", onclick: () => setView(t.track, "roll"), text: "Steps" }),
           h("button", { "aria-pressed": S.views[t.track] === "staff", onclick: () => setView(t.track, "staff"), text: "Staff" }))),
+      h("div", { class: "track-actions", "data-role": "actions" }),
       h("div", { class: "roll", "data-role": "roll" }),
-      h("div", { class: "staff", "data-role": "staff", hidden: true }),
-      h("div", { class: "track-actions", "data-role": "actions" }));
+      h("div", { class: "staff", "data-role": "staff", hidden: true }));
     box.append(card);
   }
   updateTrackChrome(st);
@@ -264,26 +266,64 @@ function updateTrackChrome(st) {
     const ktag = card.querySelector('[data-role="key"]');
     ktag.hidden = !t.key;
     ktag.textContent = t.key || "";
+    const mtag = card.querySelector('[data-role="muted"]');
+    mtag.hidden = !t.muted;
     const box = card.querySelector('[data-role="actions"]');
-    box.replaceChildren(...trackActions(t, armedBy[t.track], st));
+    const armed = armedBy[t.track];
+    const algos = st.algorithms.filter(a => a.kinds.includes(t.kind === "chords" ? "chords" : t.kind));
+    const key = JSON.stringify([
+      can("writer"), can("controls"), can("mixer"), t.kind, t.undo, t.muted,
+      armed ? [armed.algorithm, armed.control, armed.kind, armed.runs, armed.depth, armed.last] : null,
+      algos.map(a => [a.name, a.description, a.kinds]),
+      st.controls.map(c => [c.name, c.kind, c.description]),
+    ]);
+    if (S.actionsKeys[t.track] !== key) {
+      S.actionsKeys[t.track] = key;
+      box.replaceChildren(...trackActions(t, armed, st));
+    }
   }
 }
 
 function trackActions(t, armed, st) {
   const out = [];
-  if (!can("writer")) return [h("span", { class: "empty", text: "This device cannot be written to." })];
+  if (can("mixer")) {
+    out.push(h("button", {
+      class: t.muted ? "primary" : "ghost",
+      "aria-pressed": !!t.muted,
+      title: t.muted ? "Unmute this track" : "Mute this track",
+      onclick: () => act(`/api/ui/track/${t.track}/mute`, { muted: !t.muted }, t.muted ? "Unmute" : "Mute"),
+    }, t.muted ? "Unmute" : "Mute"));
+  }
+  if (!can("writer")) {
+    if (!out.length) return [h("span", { class: "empty", text: "This device cannot be written to." })];
+    return out;
+  }
   const algos = st.algorithms.filter(a => a.kinds.includes(t.kind === "chords" ? "chords" : t.kind));
   if (algos.length) {
     if (!S.algoChoice[t.track] || !algos.some(a => a.name === S.algoChoice[t.track])) S.algoChoice[t.track] = algos[0].name;
-    const sel = h("select", { "aria-label": "Algorithm", onchange: e => (S.algoChoice[t.track] = e.target.value) },
+    const action = h("button", { class: "primary", disabled: !!armed,
+      onclick: () => act(`/api/ui/track/${t.track}/generate`, { algorithm: S.algoChoice[t.track] },
+        S.algoChoice[t.track] === "random_initializer" ? "Initialize" : "Vary") });
+    const updateAction = value => {
+      const initialize = value === "random_initializer";
+      action.textContent = initialize ? "Initialize" : "Vary";
+      action.title = initialize ? "Replace the sequence with generated notes" : "Run the algorithm once";
+    };
+    const sel = h("select", { "aria-label": "Algorithm", onchange: e => {
+      S.algoChoice[t.track] = e.target.value;
+      updateAction(e.target.value);
+    } },
       ...algos.map(a => h("option", { value: a.name, selected: a.name === S.algoChoice[t.track], title: a.description,
         text: a.name.replace(/_/g, " ") })));
-    out.push(h("div", { class: "group" }, sel,
-      h("button", { class: "primary", disabled: !!armed, title: "Run the algorithm once",
-        onclick: () => act(`/api/ui/track/${t.track}/generate`, { algorithm: S.algoChoice[t.track] }, "Vary") }, "Vary")));
+    updateAction(S.algoChoice[t.track]);
+    out.push(h("div", { class: "group" }, sel, action));
   }
   out.push(h("button", { class: "ghost", disabled: !t.undo, title: "Undo the last write to this track",
     onclick: () => act(`/api/ui/track/${t.track}/undo`, {}, "Undo") }, t.undo ? `Undo (${t.undo})` : "Undo"));
+  out.push(h("button", { class: "ghost", disabled: !!armed,
+    title: "Remove all notes of this track (Undo brings them back)",
+    onclick: () => { if (confirm(`Clear all notes of track ${t.track}?`)) act(`/api/ui/track/${t.track}/clear`, {}, "Clear"); }
+  }, "Clear"));
   if (can("controls") && algos.length) {
     out.push(h("span", { class: "sep" }));
     if (armed) {

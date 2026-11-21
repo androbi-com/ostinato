@@ -340,6 +340,10 @@ class SloopDevice:
                 done_params[pid] = val
                 with st.lock:
                     tr.params[pid] = val
+                    if pid == 0:
+                        tr.level = val
+                    elif pid == st.param_id("MUTE", default=40):
+                        tr.mute = int(bool(val))
             changed = []
             for i in sorted(steps):
                 new = steps[i]

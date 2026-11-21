@@ -9,11 +9,21 @@ from ostinato.model import Event, Grid, Note, Sequence
 def test_capabilities(sloop):
     b, _ = sloop
     assert set(b.capabilities()) == {"tracks", "reader", "writer", "keys", "instruments", "tempo", "changes",
-                                     "parameters", "controls"}
+                                     "parameters", "controls", "mixer"}
     tracks = b.tracks.list_tracks()
     assert [t.track for t in tracks] == [1, 2, 3, 4] and tracks[3].kind == "drums"  # (SLOOP says 4)
     assert b.instruments.instrument(1).startswith("ANALOG") and b.instruments.instrument(4).startswith("DRUMS")
     assert b.tempo.tempo() == 90
+
+
+def test_track_mute(sloop):
+    b, sim = sloop
+    assert not b.mixer.muted(2)
+    assert b.mixer.set_muted(2, True) and b.mixer.muted(2)
+    pid = b.dev.state.param_id("MUTE")
+    assert sim.tracks[1]["p"][pid] == 1 and sim.tracks[1]["mute"] == 1
+    assert not b.mixer.set_muted(2, False) and not b.mixer.muted(2)
+    assert sim.tracks[1]["p"][pid] == 0 and sim.tracks[1]["mute"] == 0
 
 
 def test_read_steps_as_events(sloop):
