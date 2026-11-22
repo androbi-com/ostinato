@@ -190,6 +190,23 @@ def test_transport(ui):
     assert st == 400
 
 
+def test_tempo(ui):
+    c, _, _ = ui
+    _, s = c.json("GET", "/api/ui/state")
+    assert s["tempo"] == 90 and s["tempo_range"] == {"min": 40, "max": 240, "step": 1} and s["tempo_note"] is None
+    st, r = c.json("POST", "/api/ui/tempo", {"bpm": 124})
+    assert st == 200 and r["tempo"] == 124 and r["text"] == "tempo 124 BPM"
+    _, s = c.json("GET", "/api/ui/state")
+    assert s["tempo"] == 124
+    st, r = c.json("POST", "/api/ui/tempo", {"bpm": -4, "relative": True})
+    assert st == 200 and r["tempo"] == 120
+    for bad in ({}, {"bpm": "fast"}, {"bpm": [1]}):
+        assert c.json("POST", "/api/ui/tempo", bad)[0] == 400
+    assert c.json("POST", "/api/ui/tempo", {"bpm": 100}, write=False)[0] == 403
+    _, lg = c.json("GET", "/api/ui/log?since=0")
+    assert "tempo 124 BPM (was 90)" in [e["text"] for e in lg["events"]]
+
+
 def test_settings(ui, tmp_path):
     c, _, _ = ui
     st, r = c.json("GET", "/api/ui/setups")

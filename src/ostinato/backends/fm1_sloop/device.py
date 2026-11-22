@@ -479,14 +479,14 @@ class SloopDevice:
                 st.tracks[t].fill_raw = got
         return n
 
-    def set_globals(self, values: dict[int, int]) -> dict[int, int]:
-        """Globals by id (SET scope 1), only those that differ. -> {id: value as the device took it}."""
+    def set_globals(self, values: dict[int, int], force: bool = False) -> dict[int, int]:
+        """Globals by id (SET scope 1), only those that differ (force: all). -> {id: value as the device took it}."""
         st = self.state
         out = {}
         with self._sync:
             for gid, v in values.items():
                 with st.lock:
-                    if gid < len(st.globals) and st.globals[gid] == v:
+                    if not force and gid < len(st.globals) and st.globals[gid] == v:
                         continue
                 _, _, got = P.parse_value(self.rq(req.set_global(gid, v)))
                 out[gid] = got

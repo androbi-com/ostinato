@@ -98,7 +98,7 @@ function renderHeader(st) {
   else if (st.backend) text = `${st.backend} · not connected (${s0.sync || "released"})`;
   else text = `looking for a device… ${s0.scan ? "(" + s0.scan + ")" : ""}`;
   $("#device-text").textContent = text;
-  $("#tempo").textContent = st.tempo ? `♩ = ${Math.round(st.tempo)}` : "";
+  renderTempo(st);
   const play = $("#btn-play");
   play.hidden = st.playing == null;
   play.textContent = st.playing ? "■ Stop" : "▶ Play";
@@ -113,6 +113,48 @@ function renderHeader(st) {
       ? "The device is not connected or still being read. Reconnect takes it back (e.g. after its own editor)."
       : "No device detected yet. Plug it in by USB; the device server looks for it every few seconds.";
   } else notice.hidden = true;
+}
+
+// the tempo: a number field where the device lets us set it, else only shown. The field follows the device, except
+// while it holds a number typed here that is not sent yet.
+const bpmText = v => String(Math.round(v * 100) / 100);
+
+function renderTempo(st) {
+  const input = $("#tempo-input"), text = $("#tempo-text"), r = st.tempo_range;
+  const editable = !!(r && st.status && st.status.connected);
+  $("#tempo").hidden = !st.tempo;
+  input.hidden = !editable;
+  text.hidden = editable;
+  $("#tempo").title = st.tempo_note || "";
+  $("#tempo").classList.toggle("noted", !!st.tempo_note);
+  if (!st.tempo) return;
+  text.textContent = bpmText(st.tempo);
+  if (editable) {
+    input.min = r.min; input.max = r.max; input.step = r.step;
+    input.title = `Tempo in BPM (${r.min} to ${r.max})` + (st.tempo_note ? ` · ${st.tempo_note}` : "");
+  }
+  if (!S.tempoDirty) input.value = bpmText(st.tempo);
+}
+
+let tempoTimer = 0;
+function revertTempo() {
+  clearTimeout(tempoTimer);
+  S.tempoDirty = false;
+  if (S.state && S.state.tempo) $("#tempo-input").value = bpmText(S.state.tempo);
+}
+
+async function sendTempo() {
+  clearTimeout(tempoTimer);
+  if (!S.tempoDirty || S.tempoSending) return;
+  const input = $("#tempo-input"), sent = input.value;
+  if (!sent || (S.state && Number(sent) === S.state.tempo)) return revertTempo();
+  S.tempoSending = true;
+  const r = await act("/api/ui/tempo", { bpm: Number(sent) }, "Tempo");
+  S.tempoSending = false;
+  if (input.value !== sent) { tempoTimer = setTimeout(sendTempo, 250); return; }  // (changed meanwhile)
+  if (!r) return revertTempo();
+  S.tempoDirty = false;
+  input.value = bpmText(r.tempo);
 }
 
 // ---------------------------------------------------------------- tracks
@@ -707,6 +749,14 @@ document.querySelectorAll(".tabs button").forEach(b => b.addEventListener("click
 }));
 $("#btn-play").onclick = () => act("/api/ui/transport", { action: S.state && S.state.playing ? "stop" : "play" },
   "Play / stop");
+// (the arrows and the spin buttons "change" at every step: sent when they pause)
+$("#tempo-input").addEventListener("input", () => (S.tempoDirty = true));
+$("#tempo-input").addEventListener("change", () => { clearTimeout(tempoTimer); tempoTimer = setTimeout(sendTempo, 250); });
+$("#tempo-input").addEventListener("blur", sendTempo);
+$("#tempo-input").addEventListener("keydown", e => {
+  if (e.key === "Enter") sendTempo();
+  else if (e.key === "Escape") { revertTempo(); e.target.select(); }
+});
 $("#btn-release").onclick = () => act("/api/ui/disconnect", {}, "Release");
 $("#btn-connect").onclick = () => act("/api/ui/connect", {}, "Reconnect");
 

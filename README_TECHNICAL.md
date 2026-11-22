@@ -63,6 +63,7 @@ names; no key: no key signature, sharps; no writer: no writing tools; no transpo
 | `keys` | KeyInfo | a track's key; the device's own key settings; the scales it offers | yes |
 | `instruments` | InstrumentInfo | a track's sound name | engine + preset, drum kit |
 | `tempo` | TempoInfo | tempo, time signature | yes |
+| `tempo_control` | TempoControl | set the tempo, within the device's range | whole BPM, 40..240 |
 | `changes` | ChangeFeed | notices of edits made on the device | yes (pushes) |
 | `parameters` | ParameterInfo | named parameters with values | yes |
 | `controls` | ControlInputs | knobs / buttons usable as triggers (generative mode) | the PHS knob, the keys |
@@ -125,7 +126,8 @@ canonicalize script path"): `uv sync --reinstall`, or `uv run python -m pytest` 
 `ostinato-device ui` opens the device server's page in your browser. It shows:
 
 - **Header**: the backend, firmware and port, **▶ Play / ■ Stop** (with the `transport` capability; it follows the
-  device's own PLAY button), the tempo, and **Release** / **Reconnect** for the device.
+  device's own PLAY button), the tempo (a number field with the `tempo_control` capability: Enter, the arrows or
+  leaving the field sends it, Escape puts it back), and **Release** / **Reconnect** for the device.
 - **Tracks**: each track as a step roll (or a drum grid) or as a staff, live: edits on the device, writes from
   Claude and generative runs show up within a second. Per track: the **sound menu** (presets grouped by engine; kits
   on the drum track), **Mute**, **Level** and **Pan** sliders (sent when let go; double-click Pan to centre it), an
@@ -137,7 +139,7 @@ canonicalize script path"): `uv sync --reinstall`, or `uv run python -m pytest` 
 - **Settings**: a form for every setup (the algorithms, `gesture.json`, the backend's controls such as the knob),
   generated from the defaults files and their `_ui` hints. **Save** writes your file in the setup folder (checked:
   a bad value falls back to its default, and the card says so); **Reset to defaults** removes it.
-- **Activity**: the change log (device edits, writes, runs, undos, sounds, mix, states, play / stop, connection).
+- **Activity**: the change log (device edits, writes, runs, undos, sounds, mix, states, play / stop, tempo, connection).
 
 The page is for this computer only. The server listens on 127.0.0.1 and checks the `Host` header (against DNS
 rebinding). `ostinato-device ui` opens `/ui/login?key=<token>` (the token from `device.json`), which sets an
@@ -162,6 +164,7 @@ All named `ostinato_*`; tracks are numbered from 1, notes with 60 = C4.
 | `ostinato_set_level` | mixer | Level (`-12dB`, `75%`, `off`, a number; `relative` for `+3dB` / `-10%`) and pan (`center`, `L30`, `R50`, `-30%`); without values: the mix of every track |
 | `ostinato_instruments`, `ostinato_set_instrument` | sounds | The sounds a track can take (by engine; kits on drums); set one by name (`RHODES`, `DIGITAL / RHODES`, `909`), with suggestions for near misses |
 | `ostinato_play` | transport | `play`, `stop`, `toggle` (as PLAY), `status` |
+| `ostinato_set_tempo` | tempo_control | The tempo in BPM (`relative` for `+5` / `-10`); without a value: the tempo and its range |
 | `ostinato_write_notes`, `ostinato_write_midi` | writer | JSON notes / a .mid file onto a track, fitted to the device's limits (what was adapted is reported) |
 | `ostinato_clear_track` | writer | Remove all notes (length and step length kept, or `keep_length=false`: one bar of 1/16), or only one note (`note_only="A3"`) / one drum lane (`"HAT"`) |
 | `ostinato_undo` | writer | Undo the last write to a track (notes: writes, clears, runs, applied states; up to 30) |
@@ -176,7 +179,7 @@ A JSON note: `{"note": "E4" | 64 | ["C4","E4","G4"], "start": 1, "length": 2, "a
 (`unit`), where the grid is chosen to hold every position (the current one, else the finest that does).
 
 What can and cannot be undone: `ostinato_undo` restores a track's **notes** (Sequence snapshots). Sound, level, pan,
-mute and play are not undoable: their tools report the previous value, so it can be set again. A clear is refused
+mute, play and tempo are not undoable: their tools report the previous value, so it can be set again. A clear is refused
 while generative mode is armed on the track.
 
 ## Saved states (`ostinato/states.py`, `backends/fm1_sloop/states.py`)
@@ -271,6 +274,9 @@ The editor protocol (SysEx `F0 7D 46 4C <cmd> ... F7`, every data byte 7 bit) is
 - **Playback**: `LIVE` (cmd 77, protocol 12): op 1 with 0 stop / 1 play / 2 toggle; op 0 returns the live state,
   whose first byte has bit 0 = playing (bit 2 song mode). Play / stop is not pushed: the keeper thread asks every
   0.5 s, which also keeps `WATCH` alive in place of PING. In song mode with an empty section, play is refused.
+- **Tempo**: the global `BPM` (id 0, whole numbers; the range from its DESC), written with `SET` scope 1; turns on
+  the device are pushed. With the global `SYNC` on USB / TRS instead of INT the device may follow that clock: the
+  tool and the UI say so.
 - **Saved states**: locks are written one at a time (`LOCK_SET`, 24 a track), nudges (`MICRO_SET`) and fill
   conditions (`FILL_SET`) one step at a time, globals with `SET` scope 1. The exact copy is backup object 0 (the
   working project, a 3816-byte `project_t` on 2.8): `BK_LIST`, then `BK_GET` in pieces of 256 bytes, checked against

@@ -411,6 +411,32 @@ class _Tempo(_Parts):
     def time_signature(self) -> tuple[int, int]:
         return (4, 4)
 
+    # ---- setting it: the global BPM (whole numbers; its description gives the range)
+    def tempo_range(self) -> tuple[float, float, float] | None:
+        st = self.st
+        with st.lock:
+            gid = st.global_id("BPM")
+            if gid is None or gid >= len(st.globals):
+                return None
+            d = st.gdesc[gid]
+            return (float(d.min), float(d.max), 1.0) if d.max > d.min else None
+
+    def set_tempo(self, bpm: float) -> float:
+        gid = self.st.global_id("BPM")
+        if self.dev is None or gid is None:
+            raise ValueError("this firmware's tempo cannot be set from here")
+        v = int(round(bpm))
+        return float(self.dev.set_globals({gid: v}, force=True)[gid])
+
+    def tempo_note(self) -> str | None:
+        st = self.st
+        with st.lock:
+            gid = st.global_id("SYNC")
+            if gid is None or gid >= len(st.globals) or not st.globals[gid]:
+                return None  # (INT: its own clock)
+            src = P.fmt_value(st.gdesc[gid], st.globals[gid])
+        return f"SYNC is {src}: the device may follow that clock instead of its own tempo"
+
 
 class _Changes(_Parts):
     """The mirror's change log (state.ChangeEvent), as generic DeviceEvents; our own writes are not included."""
@@ -534,7 +560,7 @@ on the device for the selected track only: ostinato_refresh re-reads another tra
         from .states import SloopStates
 
         self.states = SloopStates(self)
-        self.tempo = _Tempo(self)
+        self.tempo = self.tempo_control = _Tempo(self)
         self.changes = _Changes(self)
         self.parameters = _Parameters(self)
         self.controls = SloopControls(self)

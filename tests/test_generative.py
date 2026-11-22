@@ -287,7 +287,7 @@ def test_tools_follow_the_capabilities(cfgdir):
     names = set(T.register(mcp, s))
     assert {"ostinato_show_track", "ostinato_show_staff", "ostinato_write_notes", "ostinato_undo", "ostinato_generate"} <= names
     assert not names & {"ostinato_scales", "ostinato_parameters", "ostinato_generative_mode", "ostinato_mute_track",
-                        "ostinato_link_info"}
+                        "ostinato_set_tempo", "ostinato_link_info"}
 
     async def call(name, **kw):
         res = await mcp.call_tool(name, kw)

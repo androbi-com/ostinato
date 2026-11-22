@@ -55,7 +55,10 @@ button, select, input { font: inherit; color: inherit; }
 .dot.on { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); }
 .dot.wait { background: var(--warn); }
 .top-actions { display: flex; align-items: center; gap: 10px; }
-.tempo { color: var(--muted); font-variant-numeric: tabular-nums; }
+.tempo { color: var(--muted); font-variant-numeric: tabular-nums; display: inline-flex; align-items: center; gap: 6px; }
+.tempo[hidden] { display: none; }
+.tempo input[type="number"] { width: 5em; color: var(--ink); }
+.tempo.noted input[type="number"] { border-color: var(--warn); }
 
 /* ---- tabs */
 .tabs { display: flex; gap: 4px; padding: 10px 24px 0; }

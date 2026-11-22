@@ -1,6 +1,7 @@
 """The SLOOP backend (simulated FM-1): its capabilities, and SLOOP steps <-> the generic Sequence."""
 from fractions import Fraction
 
+import pytest
 from conftest import wait_for
 from ostinato.backends.fm1_sloop import protocol as P
 from ostinato.model import Event, Grid, Note, Sequence
@@ -8,8 +9,8 @@ from ostinato.model import Event, Grid, Note, Sequence
 
 def test_capabilities(sloop):
     b, _ = sloop
-    assert set(b.capabilities()) == {"tracks", "reader", "writer", "keys", "instruments", "tempo", "changes",
-                                     "parameters", "controls", "mixer", "sounds", "states", "transport"}
+    assert set(b.capabilities()) == {"tracks", "reader", "writer", "keys", "instruments", "tempo", "tempo_control",
+                                     "changes", "parameters", "controls", "mixer", "sounds", "states", "transport"}
     tracks = b.tracks.list_tracks()
     assert [t.track for t in tracks] == [1, 2, 3, 4] and tracks[3].kind == "drums"  # (SLOOP says 4)
     assert b.instruments.instrument(1).startswith("ANALOG") and b.instruments.instrument(4).startswith("DRUMS")
@@ -203,6 +204,54 @@ def test_pan(sloop):
     after = b.mixer.set_pan(2, -32)
     assert after.value == -32 and after.text == "-50%"
     assert b.mixer.set_pan(2, 99).value == 63
+
+
+# ---------------------------------------------------------------- tempo
+
+def test_set_tempo(sloop):
+    from ostinato.session import Session
+
+    b, sim = sloop
+    s = Session(b)
+    bpm = b.dev.state.global_id("BPM")
+    assert b.tempo_control.tempo_range() == (40, 240, 1)
+    assert s.set_tempo(124) == (90, 124) and sim.g[bpm] == 124 and b.tempo.tempo() == 124
+    assert s.set_tempo(-4, relative=True) == (124, 120) and sim.g[bpm] == 120
+    assert s.set_tempo(999)[1] == 240 and s.set_tempo(1)[1] == 40  # (clamped)
+    assert s.set_tempo("100.4")[1] == 100  # (whole numbers)
+    for bad in (None, True, "fast", float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            s.set_tempo(bad)
+    assert sim.g[bpm] == 100
+    assert [e.text for e in s.log_entries if e.kind == "tempo"][:2] == ["tempo 124 BPM (was 90)", "tempo 120 BPM (was 124)"]
+    sim.g[bpm] = 77  # (changed behind our back, not pushed): still sent
+    s.set_tempo(100)
+    assert sim.g[bpm] == 100
+    sim.user_turn_knob(bpm, 133, scope=1)  # turned on the device
+    assert wait_for(lambda: s.tempo() == 133)
+
+
+def test_tempo_tool(sloop):
+    import asyncio
+
+    from mcp.server.mcpserver import MCPServer
+    from ostinato import tools as T
+    from ostinato.session import Session
+
+    b, sim = sloop
+    mcp = MCPServer("t")
+    assert "ostinato_set_tempo" in T.register(mcp, Session(b))
+
+    def call(**kw):
+        return asyncio.run(mcp.call_tool("ostinato_set_tempo", kw)).content[0].text
+
+    assert call() == "Tempo 90 BPM (range 40..240 BPM)."
+    assert call(bpm=124) == "Tempo 124 BPM (was 90)." and sim.g[0] == 124
+    assert call(bpm=-4, relative=True) == "Tempo 120 BPM (was 124)."
+    assert call(bpm=300) == "Tempo 240 BPM (was 120). Asked for 300; range 40..240 BPM."
+    sim.user_turn_knob(b.dev.state.global_id("SYNC"), 1, scope=1)
+    assert wait_for(lambda: b.tempo_control.tempo_note())
+    assert "SYNC is USB" in call(bpm=100)
 
 
 # ---------------------------------------------------------------- playback (LIVE)

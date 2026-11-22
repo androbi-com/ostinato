@@ -9,6 +9,7 @@ session; nothing here knows a firmware.
     mixer:                 ostinato_mute_track, ostinato_set_level
     sounds:                ostinato_instruments, ostinato_set_instrument
     transport:             ostinato_play
+    tempo_control:         ostinato_set_tempo
     reader (states):       ostinato_save_state, ostinato_list_states, ostinato_load_state, ostinato_show_state,
                            ostinato_delete_state; + writer: ostinato_apply_state
     writer (+ reader):     ostinato_write_notes, ostinato_write_midi, ostinato_clear_track, ostinato_undo,
@@ -383,6 +384,30 @@ def register(mcp, session) -> list[str]:
             except (ValueError, RuntimeError) as ex:
                 return f"Not changed: {ex}"
             return "Playing." if now else "Stopped."
+
+    if b.tempo_control is not None:
+        @tool(WRITE)
+        async def ostinato_set_tempo(bpm: float | None = None, relative: bool = False) -> str:
+            """Set the device's tempo in BPM (120), or with relative=true change it by that much (5, -10). Without
+            bpm: say the tempo and its range. Works while playing. A tempo outside the device's range is clamped, and
+            rounded to what the device can hold (SLOOP: whole numbers, 40..240): the answer says what it took."""
+            if (e := ready()):
+                return e
+            r = session.tempo_range()
+            rng = f"range {r[0]:g}..{r[1]:g} BPM" if r else "cannot be set from here"
+            if bpm is None:
+                now = session.tempo()
+                text = (f"Tempo {now:g} BPM" if now is not None else "Tempo not known") + f" ({rng})."
+            else:
+                try:
+                    before, after = await _run(session.set_tempo, bpm, relative)
+                except (ValueError, RuntimeError) as ex:
+                    return f"Not changed: {ex}"
+                asked = bpm + before if relative else bpm
+                text = (f"Tempo {after:g} BPM" + (f" (was {before:g})" if before is not None else "") + "."
+                        + (f" Asked for {asked:g}; {rng}." if after != asked else ""))
+            note = session.tempo_note()
+            return text + (f" Note: {note}." if note else "")
 
     # ------------------------------------------------------------------ saved states
     if b.reader is not None:

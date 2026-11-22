@@ -13,6 +13,7 @@ part names, without `keys` no key signature, without `writer` the writing tools 
 | keys          | KeyInfo          | a track's key and scale                                    |
 | instruments   | InstrumentInfo   | a track's sound name                                       |
 | tempo         | TempoInfo        | tempo and time signature                                   |
+| tempo_control | TempoControl     | set the tempo                                              |
 | changes       | ChangeFeed       | notices of edits made on the device                        |
 | parameters    | ParameterInfo    | named parameters with their values                         |
 | controls      | ControlInputs    | knobs / buttons usable as triggers (generative mode)       |
@@ -69,6 +70,12 @@ class InstrumentInfo(Protocol):
 class TempoInfo(Protocol):
     def tempo(self) -> float | None: ...
     def time_signature(self) -> tuple[int, int]: ...
+
+
+class TempoControl(Protocol):
+    def tempo_range(self) -> tuple[float, float, float] | None: ...  # (min, max, step) in BPM; None: cannot be set now
+    def set_tempo(self, bpm: float) -> float: ...  # (within the range) -> the tempo as the device took it
+    def tempo_note(self) -> str | None: ...  # why the tempo may not be heard (e.g. an external clock), or None
 
 
 class ChangeFeed(Protocol):
@@ -143,6 +150,7 @@ class Backend:
     keys: KeyInfo | None = None
     instruments: InstrumentInfo | None = None
     tempo: TempoInfo | None = None
+    tempo_control: TempoControl | None = None
     changes: ChangeFeed | None = None
     parameters: ParameterInfo | None = None
     controls: ControlInputs | None = None
@@ -170,8 +178,8 @@ class Backend:
         raise NotImplementedError
 
     def capabilities(self) -> list[str]:
-        return [n for n in ("tracks", "reader", "writer", "keys", "instruments", "tempo", "changes", "parameters",
-                            "controls", "mixer", "sounds", "states", "transport") if getattr(self, n) is not None]
+        return [n for n in ("tracks", "reader", "writer", "keys", "instruments", "tempo", "tempo_control", "changes",
+                            "parameters", "controls", "mixer", "sounds", "states", "transport") if getattr(self, n) is not None]
 
     def setups(self) -> list:
         """The backend's own JSON setups (ostinato.setup.Setup subclasses), for settings forms."""

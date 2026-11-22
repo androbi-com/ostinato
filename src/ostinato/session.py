@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections import deque
@@ -146,6 +147,37 @@ class Session:
 
     def tempo(self) -> float | None:
         return self.backend.tempo.tempo() if self.backend.tempo else None
+
+    def tempo_range(self) -> tuple[float, float, float] | None:
+        """(min, max, step) in BPM; None: the tempo cannot be set."""
+        c = self.backend.tempo_control
+        return c.tempo_range() if c is not None else None
+
+    def tempo_note(self) -> str | None:
+        c = self.backend.tempo_control
+        return c.tempo_note() if c is not None else None
+
+    def set_tempo(self, bpm: float, relative: bool = False, source: str = "server") -> tuple[float | None, float]:
+        """bpm: beats (quarter notes) per minute; relative: change the tempo by that much. Clamped to the device's
+        range. -> (before, after, as the device took it)."""
+        r = self.tempo_range()
+        if r is None:
+            raise NotSupported("this device's tempo cannot be set from here")
+        try:
+            target = float("nan") if isinstance(bpm, bool) else float(bpm)
+        except (TypeError, ValueError):
+            target = float("nan")
+        if not math.isfinite(target):
+            raise ValueError(f"not a tempo: {bpm!r} (a number of BPM, e.g. 120)")
+        before = self.tempo()
+        if relative:
+            if before is None:
+                raise ValueError("the current tempo is not known: give the tempo itself")
+            target += before
+        after = self.backend.tempo_control.set_tempo(max(r[0], min(r[1], target)))
+        self.log("tempo", None, f"tempo {after:g} BPM" + (f" (was {before:g})" if before is not None else ""),
+                 source=source)
+        return before, after
 
     def track_muted(self, track: int) -> bool:
         if self.backend.mixer is None:

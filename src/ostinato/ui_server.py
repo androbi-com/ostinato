@@ -188,6 +188,7 @@ def register(mcp, manager) -> None:
         st = m.status()
         out = {"version": __version__, "status": st, "backend": m.backend_cls.title if m.backend_cls else None,
                "capabilities": st.get("capabilities", []), "log_version": 0, "tracks": [], "tempo": None,
+               "tempo_range": None, "tempo_note": None,
                "armed": [], "controls": [], "algorithms": [], "playing": None}
         s = m.session
         if s is not None:
@@ -216,8 +217,11 @@ def register(mcp, manager) -> None:
                              for n in G.names()]
                     ctrls = ([{"name": n, "kind": k, "description": d} for n, k, d in s.backend.controls.sources()]
                              if s.backend.controls else [])
-                    return tracks, armed, algos, ctrls, s.tempo()
-                out["tracks"], out["armed"], out["algorithms"], out["controls"], out["tempo"] = await run(collect)
+                    r = s.tempo_range()
+                    return {"tracks": tracks, "armed": armed, "algorithms": algos, "controls": ctrls,
+                            "tempo": s.tempo(), "tempo_note": s.tempo_note(),
+                            "tempo_range": {"min": r[0], "max": r[1], "step": r[2]} if r else None}
+                out.update(await run(collect))
         return JSONResponse(out)
 
     @mcp.custom_route("/api/ui/log", methods=["GET"])
@@ -344,6 +348,20 @@ def register(mcp, manager) -> None:
         except (ValueError, RuntimeError) as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         return JSONResponse({"playing": now, "text": "playing" if now else "stopped"})
+
+    @mcp.custom_route("/api/ui/tempo", methods=["POST"])
+    async def tempo(request: Request):
+        """{"bpm": n, "relative": bool}"""
+        s, err = session_or_error()
+        if err:
+            return err
+        d = await body(request)
+        try:
+            needs(s, "tempo_control")
+            _, now = await run(s.set_tempo, d.get("bpm"), bool(d.get("relative")))
+        except (ValueError, RuntimeError) as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"tempo": now, "text": f"tempo {now:g} BPM"})
 
     @mcp.custom_route("/api/ui/track/{track}/mix", methods=["POST"])
     async def mix(request: Request):

@@ -37,7 +37,7 @@ musical in Ostinato is built for any device, so more can follow.
 ### 🎛️ Sound and mix
 - **Choose a sound** for each track from every preset on the device (153 on SLOOP 2.8, across 12 synth engines), or a
   drum kit.
-- Set **level** and **pan**, **mute** tracks, and **start / stop** playback.
+- Set **level** and **pan**, **mute** tracks, set the **tempo**, and **start / stop** playback.
 
 ### 💾 Keep your work
 The FM-1 has room for very few songs. Ostinato saves the device's **whole state** (every note, sound, mix and
@@ -50,7 +50,7 @@ setting) to a file on your computer, as often as you like.
 
 ### 🖥️ A page in your browser
 Tracks with live step rolls and staffs, a sound menu, level and pan sliders, Mute / Vary / Undo / Clear,
-generative mode, a play button, saved states, settings for every algorithm, and a log of everything that happened.
+generative mode, a play button, a tempo field, saved states, settings for every algorithm, and a log of everything that happened.
 
 ---
 
@@ -141,7 +141,7 @@ Restart Claude Desktop, and Ostinato's tools are there. Claude Code works the sa
 | **Edit** | *"Clear track 2."* · *"Remove every A3 from track 1."* · *"Undo that."* |
 | **Vary** | *"Make a variation of track 1 with melodic_swapper."* · *"Spice up the drums a little."* · *"Arm generative mode on track 2 with the knob."* |
 | **Sound** | *"Which sounds can track 3 have?"* · *"Give track 3 the Rhodes."* · *"Switch the drums to the 909 kit."* |
-| **Mix** | *"Turn track 2 down 3 dB and pan it 30% left."* · *"Mute track 4."* · *"Start playing."* / *"Stop."* |
+| **Mix** | *"Turn track 2 down 3 dB and pan it 30% left."* · *"Mute track 4."* · *"Start playing."* / *"Stop."* · *"Set the tempo to 124."* |
 | **Keep** | *"Save this as 'verse idea'."* · *"Which states have I saved?"* · *"Load 'verse idea' and tell me what's different."* · *"Put back only the drums from it."* |
 
 ---
