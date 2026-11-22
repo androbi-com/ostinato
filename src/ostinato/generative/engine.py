@@ -72,6 +72,7 @@ class GenerativeEngine:
         self._q: queue.Queue = queue.Queue()
         self._lock = threading.RLock()
         self.errors: list[str] = []
+        self._closed = threading.Event()
         threading.Thread(target=self._worker, name="ostinato-generate", daemon=True).start()
         threading.Thread(target=self._ticker, name="ostinato-gesture", daemon=True).start()
 
@@ -146,6 +147,12 @@ class GenerativeEngine:
             except Exception:
                 log.exception("disarming")
 
+    def close(self) -> None:
+        """The end of the session: disarm, and end the threads."""
+        self.disarm_all()
+        self._closed.set()
+        self._q.put(("end", 0, 0))
+
     # ---------------------------------------------------------- gestures
     def _on_control(self, track: int, ev: ControlEvent) -> None:
         """(the control's thread) a turn or a press for an armed track."""
@@ -164,8 +171,7 @@ class GenerativeEngine:
             self._q.put(("press", track, 0))
 
     def _ticker(self) -> None:
-        while True:
-            time.sleep(0.03)
+        while not self._closed.wait(0.03):
             now = time.monotonic()
             for t, a in list(self.armed.items()):
                 if a.g_pending and (now - a.g_time) * 1000 >= a.gesture["settle_ms"]:
@@ -176,6 +182,8 @@ class GenerativeEngine:
     def _worker(self) -> None:
         while True:
             kind, t, delta = self._q.get()
+            if self._closed.is_set():
+                return
             if kind == "press":  # (presses that came while the last run wrote: catch up once)
                 while not self._q.empty() and self._q.queue[0][0] == "press" and self._q.queue[0][1] == t:
                     self._q.get_nowait()

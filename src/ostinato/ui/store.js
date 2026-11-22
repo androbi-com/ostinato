@@ -18,7 +18,12 @@ export const collapsed = signal(readCollapsed());  // (remembered in this browse
 export function can(cap) { return !!state.value && state.value.capabilities.includes(cap); }
 
 // was the device given away on purpose (Release)? Else it is being looked for.
-export function released(st) { return !!st.backend && st.status.sync === "disconnected"; }
+export function released(st) {
+  return st.backend ? st.status.sync === "disconnected" : !!st.status.released;
+}
+
+// is the virtual device (no hardware) in use?
+export function isVirtual(st) { return !!st.status.virtual; }
 
 // a signal holding an object: change one key
 export function setKey(sig, key, value) { sig.value = { ...sig.value, [key]: value }; }

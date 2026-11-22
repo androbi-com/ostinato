@@ -94,7 +94,9 @@ def test_state_tracks_staff(ui):
     assert st == 200 and s["backend"].startswith("FM-1 with SLOOP") and len(s["tracks"]) == 4
     assert {"writer", "mixer"} <= set(s["capabilities"]) and {x["name"] for x in s["controls"]} == {"knob", "keys"}
     assert all(t["muted"] is False for t in s["tracks"])
-    assert s["algorithms"][0]["name"] == "melodic_swapper"
+    assert [a["name"] for a in s["algorithms"]][:3] == ["random_initializer", "initialize_fotf", "melodic_swapper"]
+    assert [a["name"] for a in s["algorithms"] if a["initializes"]] == ["random_initializer", "initialize_fotf"]
+    assert [a["name"] for a in s["algorithms"] if "drums" in a["kinds"]][0] == "initialize_fotf"
     st, t = c.json("GET", "/api/ui/track/1")
     assert st == 200 and t["grid"]["steps"] == 16 and t["events"][0]["notes"][0]["name"] == "A2"
     st, d = c.json("GET", "/api/ui/track/4")
@@ -258,3 +260,28 @@ def test_settings(ui, tmp_path):
     assert saved["intensity_gain"] == 1.5 and "_intensity_gain" in saved  # (the defaults' comments kept)
     st, r = c.json("DELETE", "/api/ui/setups/generators:melodic_swapper")
     assert st == 200 and not r["exists"] and r["values"]["intensity_gain"] == 0.5
+
+
+def test_length_and_signature(ui):
+    c, _, _ = ui
+    _, s = c.json("GET", "/api/ui/state")
+    assert "6/8" in s["signatures"]
+    _, t = c.json("GET", "/api/ui/track/1")
+    assert t["signature"] == "auto" and t["meter"] == {"name": "4/4", "bar": 4, "beat": 1}
+    assert t["limits"]["max_steps"] == 64 and "1/16" in t["limits"]["grids"]
+    st, r = c.json("POST", "/api/ui/track/1/length", {"steps": 12})
+    assert st == 200 and "12 steps of 1/16" in r["text"]
+    _, t = c.json("GET", "/api/ui/track/1")
+    assert t["grid"]["steps"] == 12 and t["meter"]["name"] == "3/4"
+    st, r = c.json("POST", "/api/ui/track/1/signature", {"signature": "6/8"})
+    assert st == 200 and r["signature"] == "6/8"
+    _, t = c.json("GET", "/api/ui/track/1")
+    assert t["meter"] == {"name": "6/8", "bar": 3, "beat": 1.5}
+    st, _, svg = c.req("GET", "/api/ui/track/1/staff.svg")
+    assert st == 200 and b"<svg" in svg
+    for path, body in (("length", {"steps": 99}), ("length", {"steps": "x"}), ("length", {"div": "1/7"}),
+                       ("signature", {"signature": "5/3"}), ("signature", {})):
+        st, r = c.json("POST", f"/api/ui/track/1/{path}", body)
+        assert st == 400 and r["error"]
+    assert c.json("POST", "/api/ui/track/1/undo", {})[0] == 200
+    assert c.json("GET", "/api/ui/track/1")[1]["grid"]["steps"] == 16

@@ -18,7 +18,8 @@ class RandomInitializer(Generator):
     description = ("Replaces the sequence with random notes in the track's scale (or a borrowed scale), with "
                    "configurable note range, density and lengths.")
     kinds = ("melodic", "chords")
-    order = 1
+    order = 0
+    initializes = True
 
     @classmethod
     def check(cls, cfg: dict, notes: list[str]) -> dict:

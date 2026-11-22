@@ -2,7 +2,7 @@
 import { useRef } from "preact/hooks";
 import { useSignal } from "@preact/signals";
 import { html } from "./html.js";
-import { act, released, serverError, state } from "./store.js";
+import { act, isVirtual, released, serverError, state } from "./store.js";
 
 // the line next to the dot: which device, or what the server is doing
 function deviceText(st) {
@@ -10,7 +10,8 @@ function deviceText(st) {
   if (!st) return "connecting to the device server…";
   const s = st.status || {};
   if (s.connected) return `${st.backend} · ${s.firmware} · ${s.port}`;
-  if (released(st)) return `${st.backend} · released`;
+  if (isVirtual(st)) return `${st.backend} · ${s.sync}`;
+  if (released(st)) return st.backend ? `${st.backend} · released` : "the device is released";
   const why = st.backend ? s.sync : s.scan;
   return `looking for a device… ${why ? `(${why})` : ""}`;
 }
@@ -18,7 +19,9 @@ function deviceText(st) {
 // the whole header; drawn again with every poll
 export function Header() {
   const st = state.value;
-  const connected = !!(st && st.status && st.status.connected);
+  const s = (st && st.status) || {};
+  const connected = !!s.connected;
+  const virtual = !!(st && isVirtual(st));
   // green: connected, amber: released, grey: none
   const dot = serverError.value || !st ? "" : connected ? "on" : released(st) ? "wait" : "";
   return html`
@@ -33,8 +36,17 @@ export function Header() {
           ${st.playing ? "■ Stop" : "▶ Play"}</button>`}
       <!-- the tempo -->
       ${st && st.tempo && html`<${Tempo} st=${st} editable=${!!st.tempo_range && connected} />`}
-      <!-- release, or take back -->
-      ${st && (connected
+      <!-- release, or take back; the virtual device: switch to a real one that is plugged in, or close it -->
+      ${st && virtual && s.hardware && s.hardware.length > 0 && html`
+        <button class="primary" title=${`Use the device on ${s.hardware.join(", ")} instead of the virtual device`}
+          onClick=${() => act("/api/ui/connect", {}, "Switch")}>Switch to ${s.hardware[0]}</button>`}
+      ${st && virtual && !connected && html`
+        <button class="ghost" title="Start the virtual device again"
+          onClick=${() => act("/api/ui/virtual", {}, "Restart")}>Restart</button>`}
+      ${st && (virtual
+        ? html`<button class="ghost" title="Close the virtual device (its patterns are kept) and look for a real one"
+            onClick=${() => act("/api/ui/disconnect", {}, "Close")}>Close</button>`
+        : connected
         ? html`<button class="ghost" title="Release the device, e.g. for its own editor"
             onClick=${() => act("/api/ui/disconnect", {}, "Release")}>Release</button>`
         : html`<button class="ghost" title="Take the device back"

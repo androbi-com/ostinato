@@ -22,12 +22,13 @@ render(html`<${Tracks} />`, $("#tab-tracks"));
 const logVersion = computed(() => (state.value ? state.value.log_version : 0));
 effect(() => { if (logVersion.value) loadLog(); });
 
-// the tabs; settings load once, saved states every time
-let setupsShown = false;
+// the tabs; settings load once (again for another device: it has others), saved states every time
+let setupsShown = null;
 document.querySelectorAll(".tabs button").forEach(b => b.addEventListener("click", () => {
   document.querySelectorAll(".tabs button").forEach(x => x.setAttribute("aria-selected", x === b));
   document.querySelectorAll(".tab").forEach(t => (t.hidden = t.id !== "tab-" + b.dataset.tab));
-  if (b.dataset.tab === "settings" && !setupsShown) { setupsShown = true; loadSetups(); }
+  const device = state.value ? state.value.status.backend || "none" : "unknown";
+  if (b.dataset.tab === "settings" && setupsShown !== device) { setupsShown = device; loadSetups(); }
   if (b.dataset.tab === "states") loadStates();
 }));
 

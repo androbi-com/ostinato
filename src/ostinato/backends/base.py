@@ -22,8 +22,8 @@ part names, without `keys` no key signature, without `writer` the writing tools 
 | states        | StateStore       | the device's whole state as data (saved states), and back  |
 | transport     | TransportControl | play / stop, and whether it plays                          |
 
-A backend that can be found on the MIDI ports (a hardware device) also has a `probe`; one that cannot (e.g. a DAW)
-is chosen by configuration. Extra tools only one backend has come from `extra_tools()`.
+A backend that can be found on the MIDI ports (a hardware device) also has a `probe`; one that cannot is chosen by
+the user (the virtual device: `virtual`) or by configuration (e.g. a DAW). Extra tools only one backend has come from `extra_tools()`.
 """
 from __future__ import annotations
 
@@ -141,6 +141,7 @@ class Backend:
     title: ClassVar[str] = ""
     port_pattern: ClassVar[re.Pattern | None] = None  # MIDI port names it may be found under (None: not probed)
     port_prefer: ClassVar[tuple[re.Pattern, ...]] = ()  # of those, the names to try first
+    virtual: ClassVar[bool] = False  # not a device but a program standing in for one: used only when asked for
     instructions: str = ""  # for Claude: what is special about this device
 
     connection: Connection

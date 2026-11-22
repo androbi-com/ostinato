@@ -47,6 +47,29 @@ class Event:
         return self.start + self.length
 
 
+@dataclass(frozen=True)
+class Meter:
+    """A time signature. Lengths are in beats as everywhere (quarter notes)."""
+    count: int  # 6 of 6/8
+    unit: int  # 8 of 6/8
+
+    def __str__(self) -> str:
+        return f"{self.count}/{self.unit}"
+
+    @property
+    def bar(self) -> Fraction:
+        return Fraction(4 * self.count, self.unit)
+
+    @property
+    def compound(self) -> bool:
+        """Counted in threes: 6/8, 9/8, 12/8 (a beat is a dotted quarter)."""
+        return self.unit >= 8 and self.count > 3 and self.count % 3 == 0
+
+    @property
+    def beat(self) -> Fraction:
+        return Fraction(4, self.unit) * (3 if self.compound else 1)
+
+
 @dataclass
 class Grid:
     step: Fraction  # beats per step (1/4 = sixteenths)
@@ -60,6 +83,7 @@ class Sequence:
     length: Fraction  # beats: where the sequence loops
     events: list[Event] = field(default_factory=list)
     grid: Grid | None = None
+    meter: Meter | None = field(default=None, compare=False)  # how it is counted (the session's: not the device's)
 
     def sorted(self) -> "Sequence":
         s = copy.deepcopy(self)

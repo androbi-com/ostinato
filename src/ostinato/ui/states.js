@@ -1,7 +1,7 @@
 // The States tab: save the device, the saved states, apply a loaded one.
 import { api, toast } from "./api.js";
 import { $, h } from "./dom.js";
-import { act } from "./store.js";
+import { act, isVirtual, state } from "./store.js";
 
 // fetch the saved states and build the whole tab
 export async function loadStates() {
@@ -11,7 +11,7 @@ export async function loadStates() {
   // the form to save the device now
   const name = h("input", { type: "text", placeholder: "name, e.g. before gig", "aria-label": "State name" });
   const note = h("input", { type: "text", placeholder: "note (optional)", "aria-label": "Note", class: "wide" });
-  const exact = h("input", { type: "checkbox", checked: true });
+  const exact = h("input", { type: "checkbox", checked: !(state.value && isVirtual(state.value)) });
   // save under this name (asks before replacing one)
   const save = async () => {
     const n = name.value.trim();
@@ -23,7 +23,7 @@ export async function loadStates() {
   const saveCard = h("div", { class: "card states-save" },
     h("h3", { text: "Save the device now" }),
     h("div", { class: "row" }, name, note,
-      h("label", { class: "check", title: "Also keep the device's own copy of its project (put back byte for byte)" },
+      state.value && isVirtual(state.value) ? null : h("label", { class: "check", title: "Also keep the device's own copy of its project (put back byte for byte)" },
         exact, " exact copy"),
       h("button", { class: "primary", onclick: save }, "Save")));
   // a saved state as a table row, with Load and Delete

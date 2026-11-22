@@ -103,6 +103,9 @@ class SloopDevice:
         if port_hint is not None:
             self.port_hint = port_hint
         self._want_connected = True
+        if self._stop.is_set():  # (closed for good: another device is in use)
+            self._want_connected = False
+            raise NoDevice("closed")
         with self._connecting:
             return self._connect(read, progress)
 

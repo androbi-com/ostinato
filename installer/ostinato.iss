@@ -19,7 +19,7 @@ AppPublisher=androbi
 AppPublisherURL=https://github.com/androbi-com/ostinato
 AppSupportURL=https://github.com/androbi-com/ostinato/issues
 AppUpdatesURL=https://github.com/androbi-com/ostinato/releases
-AppComments=Talk to your groovebox: Claude and your browser with the M-VAVE FM-1 running SLOOP.
+AppComments=A sequencer you can talk to, standalone or with the M-VAVE FM-1 running SLOOP: Claude and your browser.
 DefaultDirName={localappdata}\Programs\Ostinato
 DisableProgramGroupPage=yes
 DisableDirPage=auto
@@ -47,7 +47,7 @@ Source: "{#Root}\dist\Ostinato\*"; DestDir: "{app}"; Flags: ignoreversion recurs
 Source: "{#Root}\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\Ostinato"; Filename: "{app}\Ostinato.exe"; Comment: "Ostinato: your FM-1 with Claude and in the browser"
+Name: "{autoprograms}\Ostinato"; Filename: "{app}\Ostinato.exe"; Comment: "Ostinato: a sequencer with Claude and in the browser, standalone or with your FM-1"
 Name: "{autodesktop}\Ostinato"; Filename: "{app}\Ostinato.exe"; Tasks: desktopicon
 Name: "{userstartup}\Ostinato"; Filename: "{app}\Ostinato.exe"; Parameters: "--no-open"; Tasks: autostart
 
@@ -61,7 +61,7 @@ Filename: "{app}\ostinato-cli.exe"; Parameters: "claude-config remove --exe ""{a
   Flags: runhidden; RunOnceId: "ClaudeConfig"
 
 [Messages]
-FinishedLabel=Ostinato is installed.%n%nPlug in your FM-1 (with SLOOP) by USB and start Ostinato from the Start menu: it waits in the tray, next to the clock, and opens its page in your browser.%n%nIf you connected it to Claude Desktop, restart Claude Desktop to see Ostinato's tools (after an update too: they stay disconnected until then).
+FinishedLabel=Ostinato is installed.%n%nStart it from the Start menu: it waits in the tray, next to the clock, and opens its page in your browser. Press "Use the virtual device" there to play on this computer, or plug in your FM-1 (with SLOOP) by USB.%n%nIf you connected it to Claude Desktop, restart Claude Desktop to see Ostinato's tools (after an update too: they stay disconnected until then).
 
 [Code]
 // Stop everything that runs from the install folder (the files are in use): the device server (which lets go of the

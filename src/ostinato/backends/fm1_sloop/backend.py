@@ -606,8 +606,10 @@ on the device for the selected track only: ostinato_refresh re-reads another tra
             try:
                 self.dev.connect()
             except Exception as e:
+                if not self.dev._want_connected:  # (released, or this backend was stopped, meanwhile)
+                    log.info("not connected at startup: %s", e)
+                    return
                 log.info("no device at startup (%s); will keep trying", e)
-                self.dev._want_connected = True
                 self.dev.state.sync_status = f"waiting for device ({e})"
                 self.dev._start_threads()
         threading.Thread(target=boot, name="sloop-boot", daemon=True).start()

@@ -1,6 +1,6 @@
 # Generative Algorithms
 
-Ostinato currently provides five registered generative algorithms. Algorithm setups are JSON files in
+Ostinato currently provides six registered generative algorithms. Algorithm setups are JSON files in
 `%APPDATA%\ostinato\generators\` on Windows (or `~/.config/ostinato/generators/` on other platforms). Set
 `OSTINATO_CONFIG_DIR` to use a different setup folder.
 
@@ -8,7 +8,9 @@ Missing or invalid setup files use the shipped defaults. Values with the wrong J
 to a default or are clamped; the UI and `ostinato_generators` report validation notes. Keys beginning with `_` are
 documentation fields, not parameters.
 
-Run an algorithm with `ostinato_generate`, or arm it on a track with `ostinato_generative_mode`. Direct runs and
+They work on every device, the virtual one included. Run an algorithm with **Vary** / **Initialize** on the page or with
+`ostinato_generate`, or, on a device with controls (the FM-1), arm it on a track with `ostinato_generative_mode`. The list
+starts with the two that replace the pattern. Direct runs and
 knob/button runs write a result back to the track and remain undoable. The optional `seed` parameter makes a
 randomized result repeatable; `null` makes the run vary.
 
@@ -66,6 +68,14 @@ configured MIDI range and in the selected track or borrowed scale.
 | `length_steps.max` | `2` | Range `1..32`: longest generated note length in grid steps. Notes are shortened before the next occupied step. |
 | `polyphony` | `0` | Range `0..1`: chance for a chord track event to add an in-scale third or fifth. |
 | `seed` | `null` | `null` for a fresh random sequence; otherwise a number for repeatable results. |
+
+## `initialize_fotf`
+
+**Track kinds:** drum tracks.
+
+Replaces the pattern with a simple four on the floor: the bass drum on every beat of the track's time signature
+(quarters; dotted quarters in 6/8, 9/8 and 12/8; a 3/8 bar is one beat), nothing else. The pattern's length and grid
+stay. Every bar starts with a kick. It has no parameters.
 
 ## `art_mutate`
 
@@ -140,7 +150,8 @@ Rerolls the spice seed without changing the pattern's pitches or explicitly muta
 
 ## Generative mode gestures
 
-The `gesture` setup controls how a device control drives any armed algorithm. The setup is stored in
+(Only on a device with controls: the FM-1, not the virtual device.) The `gesture` setup controls how a device control
+drives any armed algorithm. The setup is stored in
 `generators/gesture.json`.
 
 | Parameter | Default | Description / accepted values |

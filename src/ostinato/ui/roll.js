@@ -12,7 +12,11 @@ export function drawRoll(d, width) {
   // the grid: how long a step is, how many there are, how many make a beat
   const stepBeats = d.grid ? d.grid.step : 0.25;
   const steps = d.grid ? d.grid.steps : Math.max(1, Math.round(d.length / stepBeats));
-  const perBeat = Math.abs(1 / stepBeats - Math.round(1 / stepBeats)) < 1e-6 ? Math.round(1 / stepBeats) : 4;
+  // steps in a beat and in a bar of the track's time signature (a beat of 6/8 is a dotted quarter)
+  const meter = d.meter || { bar: 4, beat: 1 };
+  const whole = (x, other) => (x > 0.999 && Math.abs(x - Math.round(x)) < 1e-6 ? Math.round(x) : other);
+  const perBeat = whole(meter.beat / stepBeats, whole(1 / stepBeats, meter.beat < stepBeats ? 1 : 4));
+  const perBar = whole(meter.bar / stepBeats, perBeat * 4);
   const labelW = drums ? 96 : 48;
   // the steps fill the card (at least 12 px each: a long pattern scrolls sideways)
   const cellW = Math.max(12, Math.floor(((width || 1000) - labelW - 4) / steps));
@@ -50,7 +54,7 @@ export function drawRoll(d, width) {
   // steps, beats, bars
   for (let i = 0; i <= steps; i++) {
     const x = labelW + i * cellW;
-    const bar = i % (perBeat * 4) === 0, beat = i % perBeat === 0;
+    const bar = i % perBar === 0, beat = bar || (i % perBar) % perBeat === 0;
     svg.append(s("line", { x1: x, x2: x, y1: 18, y2: H, stroke: bar ? col("--muted") : beat ? col("--beat") : col("--grid"),
       "stroke-width": bar ? 1.2 : 1 }));
     if (beat && i < steps) svg.append(s("text", { x: x + 3, y: 12, "font-size": 10, fill: col("--muted") },

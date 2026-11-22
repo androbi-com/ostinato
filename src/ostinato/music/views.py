@@ -8,6 +8,7 @@ from fractions import Fraction
 
 from ..model import Event, Key, Sequence
 from . import drums as D
+from . import meter as MT
 from . import scales as SC
 
 DRUM_CH = {"normal": "x", "ghost": "g", "soft": "s", "hard": "X"}
@@ -25,20 +26,36 @@ def _idx(seq: Sequence, beats: Fraction) -> int:
     return int(beats / _step(seq))
 
 
-def _group_header(seg: range) -> str:
+def _layout(seq: Sequence) -> tuple[int, int]:
+    """(steps in a group, steps in a row): groups of a beat or so, rows of whole bars, about 16 steps."""
+    m, step = MT.of(seq), _step(seq)
+    beat, bar = m.beat / step, m.bar / step
+    if beat.denominator != 1 or bar.denominator != 1:
+        return 4, 16
+    g, b = int(beat), int(bar)
+    if g < 3:
+        g = b if b <= 4 else 4 if b % 4 == 0 else g
+    while g > 6 and g % 2 == 0:
+        g //= 2
+    if b <= 24:
+        return g, max(b, 16 // b * b)
+    return g, max(g, 16 // g * g)
+
+
+def _group_header(seg: range, group: int) -> str:
     s = list(seg)
-    return "".join(f"{s[g] + 1:<5}" for g in range(0, len(s), 4)).rstrip()
+    return "".join(f"{s[g] + 1:<{group + 1}}" for g in range(0, len(s), group)).rstrip()
 
 
 def pattern_line(seq: Sequence) -> str:
     g = seq.grid
     if g:
-        return f"Pattern: {g.steps} steps of {g.name or g.step} ({float(seq.length):g} beats)"
-    return f"Pattern: {float(seq.length):g} beats"
+        return f"Pattern: {g.steps} steps of {g.name or g.step} ({float(seq.length):g} beats), {MT.of(seq)}"
+    return f"Pattern: {float(seq.length):g} beats, {MT.of(seq)}"
 
 
-def grid_view(seq: Sequence, key: Key | None = None, steps: int | None = None, per_row: int = 16) -> str:
-    """Melodic / chords: one cell per step, 16 a row. Drums: the drum grid."""
+def grid_view(seq: Sequence, key: Key | None = None, steps: int | None = None) -> str:
+    """Melodic / chords: one cell per step, whole bars a row. Drums: the drum grid."""
     if seq.kind == "drums":
         return drum_grid(seq, steps)
     nm = SC.namer(key)
@@ -58,10 +75,12 @@ def grid_view(seq: Sequence, key: Key | None = None, steps: int | None = None, p
                 if cells[j] == ".":
                     cells[j] = "~"
     w = max(4, max(len(c) for c in cells))
+    group, per_row = _layout(seq)
     out = []
     for r in range(0, L, per_row):
         row = cells[r:r + per_row]
-        out.append(f"{r + 1:>3} | " + " | ".join(" ".join(c.ljust(w) for c in row[g:g + 4]) for g in range(0, len(row), 4)))
+        out.append(f"{r + 1:>3} | " + " | ".join(" ".join(c.ljust(w) for c in row[g:g + group])
+                                                 for g in range(0, len(row), group)))
     out.append(". empty  ~ held  +N: N more notes in a chord  ! accent  > slide  (x) muted")
     return "\n".join(out)
 
@@ -80,12 +99,13 @@ def drum_grid(seq: Sequence, steps: int | None = None, names: dict[int, str] | N
             hit[(n.pitch, i)] = str(n.ratchet) if n.ratchet > 1 else DRUM_CH.get(n.level, "x")
     out = []
     label = lambda v: (names or {}).get(v, D.name(v)).upper()[:9]
-    for r in range(0, L, 16):
-        seg = range(r, min(L, r + 16))
-        out.append(" " * 10 + _group_header(seg))
+    group, per_row = _layout(seq)
+    for r in range(0, L, per_row):
+        seg = range(r, min(L, r + per_row))
+        out.append(" " * 10 + _group_header(seg, group))
         for v in voices:
             chars = [hit.get((v, i), ".") for i in seg]
-            out.append(f"{label(v):<9} " + " ".join("".join(chars[g:g + 4]) for g in range(0, len(chars), 4)))
+            out.append(f"{label(v):<9} " + " ".join("".join(chars[g:g + group]) for g in range(0, len(chars), group)))
         out.append("")
     out.append("x hit  X hard  s soft  g ghost  2-4 ratchet (hits in the step)  . none")
     return "\n".join(out)
@@ -156,10 +176,11 @@ def roll_view(seq: Sequence, key: Key | None = None, steps: int | None = None) -
                 row[j] = "="
     if not grid:
         return "(no notes in the pattern)"
-    out = ["     " + _group_header(range(L))]
+    group, _ = _layout(seq)
+    out = ["     " + _group_header(range(L), group)]
     for p in range(max(grid), min(grid) - 1, -1):
         row = grid.get(p, ["."] * L)
-        out.append(f"{nm(p):>4} " + " ".join("".join(row[g:g + 4]) for g in range(0, L, 4)))
+        out.append(f"{nm(p):>4} " + " ".join("".join(row[g:g + group]) for g in range(0, L, group)))
     out.append("# note  = held  . nothing")
     return "\n".join(out)
 

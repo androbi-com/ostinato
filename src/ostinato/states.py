@@ -4,8 +4,8 @@ A state file is JSON, in <config>/states/<name>.json (or any path):
 
     ostinato_state   1 (this format)
     name, note, saved_at, device {backend, title, firmware}, tempo
-    tracks           the generic part, any device: per track its kind, sound (instrument), key, level / pan / mute
-                     (as the device shows them) and the notes (a Sequence: events with start / length in beats)
+    tracks           the generic part, any device: per track its kind, sound (instrument), key, time signature (the
+                     setting, "auto" or e.g. "6/8", and the one in force), level / pan / mute (as the device shows them) and the notes (a Sequence: events with start / length in beats)
     backend          the backend's own data (its `states` capability): on SLOOP every parameter, step, lock, nudge,
                      fill condition and global, which apply() writes back exactly
     exact            optional: the device's own copy of its project (base64), put back byte for byte
@@ -25,6 +25,7 @@ from typing import Any
 
 from .config import config_dir
 from .model import Event, Grid, Key, Note, Sequence
+from .music import meter as MT
 
 FORMAT = 1
 
@@ -135,11 +136,13 @@ def build(session, name: str, note: str | None, exact: bool) -> tuple[dict, list
     tracks = []
     for t in session.tracks():
         seq = session.read(t.track) if b.reader else None
+        sig = session.signature_setting(t.track)
         k = session.key(t.track) if t.kind != "drums" else None
         lv = session.track_level(t.track) if b.mixer else None
         pn = session.track_pan(t.track) if b.mixer else None
         tracks.append({"track": t.track, "name": t.name, "kind": t.kind, "instrument": session.instrument(t.track),
                        "key": asdict(k) if k else None,
+                       "signature": sig, "meter": str(seq.meter) if seq is not None and seq.meter else None,
                        "level": lv.text if lv else None, "pan": pn.text if pn else None,
                        "muted": session.track_muted(t.track) if b.mixer else None,
                        "sequence": seq_to_dict(seq) if seq else None})
@@ -180,7 +183,11 @@ def read(name: str) -> SavedState:
     s = SavedState(path, data)
     for t in data.get("tracks", []):
         if t.get("sequence"):
-            s.sequences[t["track"]] = seq_from_dict(t["sequence"])
+            seq = s.sequences[t["track"]] = seq_from_dict(t["sequence"])
+            try:  # (how it was counted; older states do not say)
+                seq.meter = MT.parse(t["meter"]) if t.get("meter") else None
+            except ValueError:
+                pass
     return s
 
 

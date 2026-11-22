@@ -24,6 +24,10 @@ def main(argv: list[str] | None = None) -> None:
         from .claude_config import main as cc_main
 
         sys.exit(cc_main(argv[1:]))
+    if cmd == "virtual-player":  # (the virtual device's process: the device server starts it)
+        from .backends.virtual_gm.player import main as player_main
+
+        sys.exit(player_main(argv[1:]))
     if cmd in ("-h", "--help", "help"):
         print(__doc__.strip())
         return
