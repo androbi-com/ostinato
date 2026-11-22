@@ -5,22 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ostinato</title>
 <link rel="stylesheet" href="/ui/style.css">
+<script type="importmap">
+{ "imports": {
+  "preact": "/ui/vendor/preact.mjs",
+  "preact/hooks": "/ui/vendor/hooks.mjs",
+  "@preact/signals": "/ui/vendor/signals.mjs",
+  "@preact/signals-core": "/ui/vendor/signals-core.mjs",
+  "htm": "/ui/vendor/htm.mjs"
+} }
+</script>
 </head>
 <body>
-<header class="top">
-  <div class="brand"><span class="mark" aria-hidden="true">𝄆</span> Ostinato</div>
-  <div class="device" id="device">
-    <span class="dot" id="dot"></span>
-    <span id="device-text">connecting to the device server…</span>
-  </div>
-  <div class="top-actions">
-    <button id="btn-play" class="ghost play" hidden title="Start / stop the device's playback"></button>
-    <label class="tempo" id="tempo" hidden><span>♩ =</span><span id="tempo-text"></span><input id="tempo-input"
-      type="number" inputmode="numeric" aria-label="Tempo in BPM" hidden></label>
-    <button id="btn-release" class="ghost" hidden title="Release the device, e.g. for its own editor">Release</button>
-    <button id="btn-connect" class="ghost" hidden title="Take the device back">Reconnect</button>
-  </div>
-</header>
+<header class="top" id="header"></header>
 
 <nav class="tabs" role="tablist">
   <button role="tab" data-tab="tracks" aria-selected="true">Tracks</button>
@@ -30,10 +26,7 @@
 </nav>
 
 <main>
-  <section id="tab-tracks" class="tab">
-    <div id="notice" class="notice" hidden></div>
-    <div id="tracks"></div>
-  </section>
+  <section id="tab-tracks" class="tab"></section>
   <section id="tab-states" class="tab" hidden>
     <p class="lead">Save the device's whole state to a file on this computer (notes, sounds, mix, settings), and put
       it back later, all of it or part of it. Loading a state only reads it: nothing changes on the device until you
@@ -52,6 +45,6 @@
 </main>
 
 <div id="toasts" class="toasts" aria-live="polite"></div>
-<script src="/ui/app.js"></script>
+<script type="module" src="/ui/app.js"></script>
 </body>
 </html>

@@ -309,7 +309,7 @@ The simulator (`backends/fm1_sloop/sim.py`) is seeded from the SLOOP web editor'
 | `backends/base.py`, `backends/__init__.py` | The backend interface and capabilities; the known backends |
 | `backends/fm1_sloop/` | `backend.py` (capabilities, steps <-> events), `states.py` (capture / apply), `keys.py`, `controls.py`, `protocol.py`, `link.py`, `device.py` (sync, writes, presets, mix, LIVE, backup objects), `state.py`, `render.py` (overview, parameters), `sim.py` + `data/` (simulator) |
 | `device_server.py`, `shim.py`, `midi.py`, `owner.py` | `ostinato-device`, `ostinato-mcp`, MIDI ports, the single-instance lock |
-| `ui_server.py`, `ui/` | The browser UI: the access gate, the `/api/ui/*` routes; the page (`index.html`, `app.js`, `style.css`) |
+| `ui_server.py`, `ui/` | The browser UI: the access gate, the `/api/ui/*` routes; the page, as ES modules without a build step: `store.js` (the page's state as signals, polling, actions), `api.js`, the Preact components `header.js` and `tracks.js`, `roll.js` (the piano roll), `states.js` / `settings.js` / `activity.js` (build their DOM with `dom.js`), `app.js` (the start); `vendor/` holds Preact, htm and signals unmodified (versions and licenses in its README) |
 | `launcher.py`, `tray.py`, `icon.py`, `claude_config.py` | The Windows bundle: one CLI for everything, the tray app, the drawn icon, Claude Desktop's config (below) |
 
 ### The Windows installer
