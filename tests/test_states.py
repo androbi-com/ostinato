@@ -59,7 +59,9 @@ def test_load_compare_and_apply_everything(sloop):
     assert sim.tracks[0]["micro"] == loaded.data["backend"]["tracks"][0]["micro"]
     assert sim.tracks[0]["fill"] == loaded.data["backend"]["tracks"][0]["fill_raw"]
     assert sim.g[bpm] == loaded.data["backend"]["globals"][bpm]
-    assert all(x.endswith("as saved") for x in s.compare_state())
+    assert [x for x in s.compare_state() if not x.endswith("as saved")] == []
+    b.dev._read_tracks_header()  # (as a late RELOAD push of the preset does, at any time after)
+    assert [x for x in s.compare_state() if not x.endswith("as saved")] == []
     # the notes can be undone per track
     assert s.undo(1) == "state song" and not any(notes(sim, 0)[:16])
     assert (ST.states_dir() / "before apply.json").exists()

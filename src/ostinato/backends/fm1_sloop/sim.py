@@ -194,6 +194,16 @@ class SimFM1:
     def _engine_byte(self, t: int) -> int:
         return self.tracks[t]["engine"]
 
+    def _set_param(self, t: int, pid: int, v: int) -> None:
+        """A track parameter; level and mute are in the track's header (TRACK) too. (The drum track's level is the
+        global drum level: its own P_LEVEL is unused.)"""
+        tr = self.tracks[t]
+        tr["p"][pid] = v
+        if pid == 0 and tr["engine"] < self.info.nengines:
+            tr["level"] = v
+        elif pid == self._param_id(t, "MUTE"):
+            tr["mute"] = int(bool(v))
+
     def _handle(self, cmd: int, a: list[int]) -> list[int] | None:
         info = self.info
         if cmd == Cmd.INFO:
@@ -230,7 +240,7 @@ class SimFM1:
                         if t["engine"] >= info.nengines:
                             t["level"] = v
             elif scope == 0 and pid < info.pcount:
-                self.tracks[self.sel]["p"][pid] = v
+                self._set_param(self.sel, pid, v)
             self.writes.append((cmd, list(a)))
             return [scope, pid, *v14enc(v)]
         if cmd == Cmd.LOCK_SET and len(a) >= 3:
@@ -343,9 +353,7 @@ class SimFM1:
             dd = P.parse_desc(self.desc_by_track[tr][pid]) if pid < info.pcount else None
             if dd and dd.max > dd.min:
                 v = max(dd.min, min(dd.max, v))
-            self.tracks[tr]["p"][pid] = v
-            if dd and dd.label == "MUTE":
-                self.tracks[tr]["mute"] = int(bool(v))
+            self._set_param(tr, pid, v)
             self.writes.append((cmd, list(a)))
             return [tr, pid, *v14enc(v)]
         if cmd == Cmd.STEP_GET:
@@ -385,7 +393,7 @@ class SimFM1:
             if scope:
                 self.g[pid] = value
             else:
-                self.tracks[self.sel]["p"][pid] = value
+                self._set_param(self.sel, pid, value)
             self._push(Cmd.CHANGED, [scope, pid, *v14enc(value)])
 
     def user_set_step(self, i: int, notes: list[int], time: int = P.TIME_NOTE, flags: int = 0, vel: int = 100) -> None:
@@ -408,8 +416,7 @@ class SimFM1:
 
     def user_change_other_track_level(self, t: int, level: int) -> None:
         with self._lock:
-            self.tracks[t]["p"][0] = level
-            self.tracks[t]["level"] = level
+            self._set_param(t, 0, level)
             if self.watch == 3 and t != self.sel:
                 self._push(Cmd.TRACK_CHANGED, [t, 0, *v14enc(level)])
 

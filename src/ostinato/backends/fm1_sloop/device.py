@@ -603,7 +603,9 @@ class SloopDevice:
         if not 0 <= engine < info.nengines:
             raise ValueError(f"no engine {engine}")
         with self._sync:
-            sel = self._device_sel
+            # which track is selected: asked, not remembered (selected on the device a moment ago, its push still on
+            # the way, the preset would land on the wrong track)
+            sel = self._device_sel = P.parse_track(self.rq(req.track()))["sel"]
             try:
                 if sel != t:
                     self.rq(req.track(t))  # (TRACK pushes no RELOAD)
@@ -684,10 +686,11 @@ class SloopDevice:
             return
         steps: dict[int, set[int]] = {}
         reload_track: int | None = None
+        sel = self._device_sel  # (as these pushes tell it; _device_sel itself: below, read from the device)
         for cmd, a in batch:
             if cmd == Cmd.CHANGED:
                 scope, pid, v = P.parse_value(a)
-                t = self._device_sel
+                t = sel
                 old = None
                 with st.lock:
                     if scope == 1:
@@ -739,8 +742,8 @@ class SloopDevice:
                     steps.setdefault(t, set()).add(r["index"])
             elif cmd == Cmd.RELOAD:
                 r = P.parse_reload(a)
-                reload_track = r["track"] if info.ntrk else 0
-                self._device_sel = reload_track
+                # (not into _device_sel: a push can be late, e.g. of our own PRESET, when the selection is back already)
+                reload_track = sel = r["track"] if info.ntrk else 0
         with self._sync:
             if reload_track is not None:
                 self._handle_reload(reload_track)

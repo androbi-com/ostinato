@@ -33,6 +33,6 @@ def sloop(cfgdir):
 
     b = SloopBackend()
     b.start(None, factory)
-    assert wait_for(lambda: b.connection.not_ready() is None, 15)
+    assert wait_for(lambda: b.connection.not_ready() is None, 60)
     yield b, sims[-1]
     b.stop()

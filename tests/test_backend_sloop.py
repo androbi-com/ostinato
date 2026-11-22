@@ -1,4 +1,5 @@
 """The SLOOP backend (simulated FM-1): its capabilities, and SLOOP steps <-> the generic Sequence."""
+import time
 from fractions import Fraction
 
 import pytest
@@ -157,6 +158,43 @@ def test_set_sound_loads_preset_and_keeps_selection(sloop):
     assert sim.tracks[t]["engine"] == 10
 
 
+def test_late_push_and_the_next_sound(sloop, monkeypatch):
+    """PRESET acts on the selected track. The RELOAD push of our own PRESET can be handled late, when the selection is
+    back already: it must not make the next sound land on that other track."""
+    import threading
+
+    b, sim = sloop
+    dev = b.dev
+    gate, waiting, orig = threading.Event(), threading.Event(), dev._handle_pushes
+
+    def held(batch):
+        waiting.set()
+        gate.wait(10)
+        orig(batch)
+    monkeypatch.setattr(dev, "_handle_pushes", held)
+    before = [(t["engine"], t["preset"]) for t in sim.tracks]
+    assert sim.sel == 0
+    b.sounds.set_sound(2, "WURLI")  # (selects track 2 for a moment)
+    assert waiting.wait(5) and sim.sel == 0
+    with dev._sync:  # another tool is busy with the device when the push is handled
+        gate.set()
+        time.sleep(0.3)
+        assert dev._device_sel == 0
+        b.sounds.set_sound(2, "RHODES")
+    assert [(t["engine"], t["preset"]) for t in sim.tracks][0] == before[0]  # (track 1 keeps its sound)
+    assert b.instruments.instrument(2) == "DIGITAL RHODES" and sim.sel == 0
+
+
+def test_sound_right_after_a_selection_on_the_device(sloop, monkeypatch):
+    b, sim = sloop
+    monkeypatch.setattr(b.dev, "_handle_pushes", lambda batch: None)  # (its push has not been handled yet)
+    before = [(t["engine"], t["preset"]) for t in sim.tracks]
+    sim.user_select_track(2)
+    b.sounds.set_sound(1, "WURLI")
+    assert [(t["engine"], t["preset"]) for t in sim.tracks][1:] == before[1:] and sim.sel == 2
+    assert b.instruments.instrument(1) == "DIGITAL WURLI"
+
+
 def test_set_sound_errors(sloop):
     b, sim = sloop
     import pytest
@@ -212,6 +250,7 @@ def test_full_read_is_logged(sloop):
     from ostinato.session import Session
 
     b, sim = sloop
+    assert wait_for(lambda: b.dev.state.watching)  # (the first read is over: WATCH comes after its notice)
     s = Session(b)
     b.connection.connect()
     assert [e.text for e in s.log_entries if e.kind == "connection"][-2:] == ["connected", "everything read"]
