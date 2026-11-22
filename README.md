@@ -4,14 +4,21 @@
 as notes in your browser and shape by talking to Claude: write melodies by describing them, grow variations, choose
 sounds, mix, and keep every version on your computer.
 
+## With provided virtual midi device
+
+**Use it on its own.** The built-in **virtual device** plays your patterns through your computer with General MIDI sounds. You need no hardware.
+
 ![Ostinato standalone in the browser: a waltz as a piano roll, and a 6/8 melody in D major on a staff](docs/virtual.png)
 
-**Use it on its own.** The built-in **virtual device** plays your patterns through your computer with General MIDI
-sounds. You need no hardware.
+## With external hardware
+
 
 **Or use it with a groovebox.** Today that is the **M-VAVE FM-1 running the
-[SLOOP firmware](https://github.com/isod89/sloop-fm1)**, over USB. Everything musical in Ostinato is built for any
-device, so more can follow. Sketches move between the two.
+[SLOOP firmware](https://github.com/isod89/sloop-fm1)**, over USB. Everything musical in Ostinato is built for any device, so more can follow. Sketches move between virtual and external devices.
+
+![Ostinato with an FM-1: first track as piano roll, second as staff](docs/ui.png)
+
+## Interface with Claude
 
 > *"Write a waltz in D major on track 1."*  ·  *"Show me track 2 as sheet music."*  ·
 > *"Make track 2 a 6/8 vibraphone melody."*  ·  *"Take the hi-hats out of the drums."*  ·
@@ -90,8 +97,6 @@ Ostinato saves the **whole state** (every note, sound, mix and setting) to a fil
 Tracks with live step rolls and staffs; menus for sound, pattern length and time signature; level and pan; Initialize / Vary /
 Undo / Clear; play and tempo; saved states; settings for every algorithm, the key and the sound output; and a log of everything
 that happened. You can use the page without Claude. Writing particular notes is Claude's part.
-
-![Ostinato with an FM-1: first track as piano roll, second as staff](docs/ui.png)
 
 ---
 
