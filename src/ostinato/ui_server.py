@@ -115,7 +115,13 @@ def _seq_json(session, track: int) -> dict:
             "extras": {k: v for k, v in e.extras.items() if k != "step"},
         })
     voices = sorted({n["pitch"] for e in evs for n in e["notes"]})
-    return {"track": track, "kind": seq.kind, "length": float(seq.length), "instrument": session.instrument(track),
+    m = seq.meter
+    lim = session.backend.writer.limits(track) if session.backend.writer is not None else None
+    return {"track": track, "kind": seq.kind, "length": float(seq.length),
+            "meter": {"name": str(m), "bar": float(m.bar), "beat": float(m.beat)} if m else None,
+            "signature": session.signature_setting(track),
+            "limits": {"grids": list(lim.grids), "max_steps": lim.max_steps} if lim else None,
+            "instrument": session.instrument(track),
             "grid": {"steps": seq.grid.steps, "step": float(seq.grid.step), "name": seq.grid.name} if seq.grid else None,
             "key": SC.key_name(key) if key and key.scale != "chromatic" else None,
             "key_note": key.note if key else None,
@@ -185,15 +191,16 @@ def register(mcp, manager) -> None:
     @mcp.custom_route("/api/ui/state", methods=["GET"])
     async def state(request: Request):
         from . import __version__
+        from .music import meter as MT
 
         m = manager
+        s, cls = m.session, m.backend_cls
         st = m.status()
-        out = {"version": __version__, "status": st, "backend": m.backend_cls.title if m.backend_cls else None,
+        out = {"version": __version__, "status": st, "backend": cls.title if cls else None,
                "capabilities": st.get("capabilities", []), "log_version": 0, "tracks": [], "tempo": None,
-               "tempo_range": None, "tempo_note": None,
+               "tempo_range": None, "tempo_note": None, "signatures": list(MT.CHOICES),
                "armed": [], "controls": [], "algorithms": [], "playing": None}
-        s = m.session
-        if s is not None:
+        if s is not None and s is m.session:  # (else the device was changed just now: the next poll has it)
             out["log_version"] = s.version
             # (not connected: as without a device; the last known state is Claude's to ask for)
             if st.get("connected") and not s.not_ready():
@@ -217,7 +224,8 @@ def register(mcp, manager) -> None:
                     armed = [{"track": a.track, "algorithm": a.algorithm, "control": a.source, "kind": a.kind,
                               "runs": a.runs, "depth": a.depth, "last": a.last, "warnings": a.warnings}
                              for a in (eng.armed.values() if eng else [])]
-                    algos = [{"name": n, "description": G.REGISTRY[n].description, "kinds": list(G.REGISTRY[n].kinds)}
+                    algos = [{"name": n, "description": G.REGISTRY[n].description, "kinds": list(G.REGISTRY[n].kinds),
+                              "initializes": G.REGISTRY[n].initializes}
                              for n in G.names()]
                     ctrls = ([{"name": n, "kind": k, "description": d} for n, k, d in s.backend.controls.sources()]
                              if s.backend.controls else [])
@@ -275,6 +283,15 @@ def register(mcp, manager) -> None:
     async def connect(request: Request):
         d = await body(request)
         return JSONResponse({"text": await run(manager.connect, d.get("port") or None)})
+
+    @mcp.custom_route("/api/ui/virtual", methods=["POST"])
+    async def use_virtual(request: Request):
+        """Use the virtual device."""
+        try:
+            await run(manager.use_virtual)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"text": "Using the virtual device (General MIDI sounds)"})
 
     @mcp.custom_route("/api/ui/disconnect", methods=["POST"])
     async def disconnect(request: Request):
@@ -400,6 +417,37 @@ def register(mcp, manager) -> None:
             return JSONResponse({"error": str(e)}, status_code=400)
         return JSONResponse({"text": f"undid {label}" if label else "nothing to undo"})
 
+    @mcp.custom_route("/api/ui/track/{track}/signature", methods=["POST"])
+    async def signature(request: Request):
+        """{"signature": "auto" | "6/8" ...}"""
+        s, err = session_or_error()
+        if err:
+            return err
+        d = await body(request)
+        try:
+            t = track_arg(request, s)
+            _, now = await run(s.set_signature, t, str(d.get("signature") or ""))
+        except (ValueError, OSError) as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"signature": s.signature_setting(t), "meter": str(now), "text": f"track {t}: {now}"})
+
+    @mcp.custom_route("/api/ui/track/{track}/length", methods=["POST"])
+    async def length(request: Request):
+        """{"steps": n} and / or {"div": "1/16"}"""
+        s, err = session_or_error()
+        if err:
+            return err
+        d = await body(request)
+        try:
+            needs(s, "writer")
+            t = track_arg(request, s)
+            _, removed = await run(s.set_length, t, d.get("steps"), d.get("div") or None)
+            g = (await run(s.read, t)).grid
+        except (ValueError, RuntimeError) as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"text": f"track {t}: {g.steps} steps of {g.name}"
+                             + (f" ({removed} note(s) past the end removed: Undo brings them back)" if removed else "")})
+
     @mcp.custom_route("/api/ui/track/{track}/clear", methods=["POST"])
     async def clear(request: Request):
         s, err = session_or_error()
@@ -503,7 +551,8 @@ def register(mcp, manager) -> None:
             for cls in _setup_classes(manager):
                 d = cls.describe()
                 d["id"] = _setup_id(cls)
-                d["title"] = {"generators:gesture": "Gestures (generative mode)"}.get(d["id"], cls.name.replace("_", " "))
+                d["title"] = {"generators:gesture": "Gestures (generative mode)",
+                              "virtual_gm:device": "Virtual device"}.get(d["id"], cls.name.replace("_", " "))
                 d["group"] = ("Algorithms" if d["id"].startswith("generators:") and d["id"] != "generators:gesture"
                               else "Generative mode" if d["id"] == "generators:gesture" else "Device")
                 out.append(d)

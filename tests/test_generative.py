@@ -12,6 +12,7 @@ from conftest import wait_for
 from ostinato import generative as G
 from ostinato import tools as T
 from ostinato.backends.base import Backend
+from ostinato.generative import GenContext
 from ostinato.model import Event, Grid, Key, Note, Sequence, TrackInfo, WriteLimits, WriteReport
 from ostinato.session import Session
 
@@ -349,3 +350,36 @@ def test_session_level_and_pan_specs(sloop):
     with pytest.raises(ValueError, match="not a pan"):
         s.set_track_pan(2, "up")
     assert sum(e.kind == "mix" for e in s.events_since(0)) == 10
+
+
+# ---------------------------------------------------------------- initialize_fotf
+
+@pytest.mark.parametrize("sig, steps, step, want", [
+    ("4/4", 16, "1/4", [0, 4, 8, 12]), ("4/4", 64, "1/4", list(range(0, 64, 4))), ("3/4", 12, "1/4", [0, 4, 8]),
+    ("6/8", 24, "1/4", [0, 6, 12, 18]), ("12/8", 24, "1/4", [0, 6, 12, 18]), ("4/4", 12, "1/3", [0, 3, 6, 9]),
+    ("4/4", 8, "1/2", [0, 2, 4, 6]), ("4/4", 4, "1", [0, 1, 2, 3]), ("3/8", 12, "1/4", [0, 6]),
+    ("7/8", 28, "1/4", [0, 4, 8, 12, 14, 18, 22, 26]), ("4/4", 15, "1/4", [0, 4, 8, 12]), ("4/4", 4, "2", [0, 1, 2, 3]),
+    ("6/8", 9, "1/3", [0]), ("4/4", 1, "1/4", [0])])
+def test_fotf_kicks_on_the_beats(cfgdir, sig, steps, step, want):
+    from ostinato.music import meter as MT
+
+    q = Fraction(step)
+    old = [Event(Fraction(0), q, [Note(38), Note(42)])]
+    seq = Sequence("drums", q * steps, old, Grid(q, steps, "x"), MT.parse(sig))
+    res = G.get("initialize_fotf")({}).apply(GenContext(4, seq, None))
+    assert [e.start / q for e in res.seq.events] == want
+    assert all(e.pitches == [36] and e.length == q for e in res.seq.events)
+    assert res.seq.length == q * steps and res.seq.grid.steps == steps and sig in res.summary[0]
+
+
+def test_fotf_on_the_drum_track_only(sloop):
+    b, sim = sloop
+    s = Session(b)
+    before = s.read(4)
+    r = s.engine.run_once(4, "initialize_fotf")
+    assert r["written"] and [e.start for e in s.read(4, refresh=True).events] == [0, 1, 2, 3]
+    assert not s.engine.run_once(4, "initialize_fotf")["written"]  # (it is there already)
+    s.undo(4)
+    assert s.read(4) == before
+    with pytest.raises(ValueError, match="works on drums tracks"):
+        s.engine.run_once(1, "initialize_fotf")

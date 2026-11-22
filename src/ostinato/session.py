@@ -7,14 +7,20 @@
 """
 from __future__ import annotations
 
+import json
+import logging
 import math
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from fractions import Fraction
 from typing import Any
 
-from .model import DeviceEvent, Grid, Key, MixValue, Sequence, TrackInfo, WriteReport
+from .model import DeviceEvent, Grid, Key, Meter, MixValue, Sequence, TrackInfo, WriteReport
+from .music import meter as MT
+
+log = logging.getLogger("ostinato.session")
 
 MAX_UNDO = 30
 
@@ -81,21 +87,34 @@ def _mix_target(cur: MixValue, spec, relative: bool, what: str) -> int:
 
 
 class Session:
-    def __init__(self, backend):
+    def __init__(self, backend, previous: "Session | None" = None):
+        """previous: the session of the device used before: its log goes on (so does its numbering, which the page
+        and ostinato_changes follow), and the state loaded from a file stays loaded. Undo does not."""
         self.backend = backend
         self.history: dict[int, list[tuple[str, Sequence]]] = {}
         self.log_entries: deque[LogEntry] = deque(maxlen=500)
         self.version = 0
+        if previous is not None:
+            with previous._log_lock:
+                self.log_entries.extend(previous.log_entries)
+                self.version = previous.version
         self._lock = threading.RLock()  # writes and undo history
         self._log_lock = threading.Lock()  # the log only: the device's threads log while holding its own lock
         if backend.changes is not None:
             backend.changes.subscribe(self._on_device)
-        self.loaded = None  # a saved state read from its file (ostinato.states.SavedState)
+        # a saved state read from its file (ostinato.states.SavedState)
+        self.loaded = previous.loaded if previous is not None else None
+        self._signatures = self._load_signatures()  # track -> its fixed time signature (the others: auto)
         self.engine = None
         if backend.reader is not None and backend.writer is not None:
             from .generative.engine import GenerativeEngine
 
             self.engine = GenerativeEngine(self)
+
+    def close(self) -> None:
+        """Another device is used from now on."""
+        if self.engine is not None:
+            self.engine.close()
 
     # ---------------------------------------------------------- the log
     def log(self, kind: str, track: int | None, text: str, detail: dict | None = None, source: str = "server") -> None:
@@ -127,7 +146,124 @@ class Session:
         if self.backend.reader is None:
             raise NotSupported("this device cannot be read")
         self.track_info(track)
-        return self.backend.reader.read(track, refresh)
+        seq = self.backend.reader.read(track, refresh)
+        seq.meter = self._meter_of(track, seq.length)
+        return seq
+
+    # ---------------------------------------------------------- time signatures
+    # The device does not know them: they are kept here, per kind of device (<config>/signatures.json).
+    def _load_signatures(self) -> dict[int, Meter]:
+        from .config import config_dir
+
+        out = {}
+        try:
+            data = json.loads((config_dir() / "signatures.json").read_text(encoding="utf-8"))
+            for t, text in (data.get(self.backend.name) or {}).items():
+                m = MT.parse(text)
+                if m is not None:
+                    out[int(t)] = m
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, AttributeError, TypeError) as e:
+            log.warning("signatures.json: %s", e)
+        return out
+
+    def _save_signatures(self) -> None:
+        from .config import config_dir
+
+        path = config_dir() / "signatures.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        data[self.backend.name] = {str(t): str(m) for t, m in sorted(self._signatures.items())}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+        tmp.replace(path)
+
+    def _meter_of(self, track: int, length) -> Meter:
+        fixed = self._signatures.get(track)
+        if fixed is not None:
+            return fixed
+        others = []
+        if len(MT.candidates(length)) > 1:  # (only then do the other tracks matter)
+            for t in self.tracks():
+                if t.track == track:
+                    continue
+                m = self._signatures.get(t.track)
+                if m is None:
+                    c = MT.candidates(self.backend.reader.read(t.track).length)
+                    m = c[0] if len(c) == 1 else None
+                if m is not None:
+                    others.append(m)
+        return MT.guess(length, others)
+
+    def signature_setting(self, track: int) -> str:
+        """"auto", or the fixed signature ("6/8")."""
+        return str(self._signatures.get(track, MT.AUTO))
+
+    def set_signature(self, track: int, signature: str, source: str = "server") -> tuple[str, Meter]:
+        """signature: "auto" or one of meter.CHOICES. The notes do not change. -> (the setting before, the signature
+        now in force)."""
+        self.track_info(track)
+        m = MT.parse(signature)
+        with self._lock:
+            before = self.signature_setting(track)
+            if m is None:
+                self._signatures.pop(track, None)
+            else:
+                self._signatures[track] = m
+            if before != self.signature_setting(track):
+                self._save_signatures()
+        now = self.read(track).meter
+        if before != self.signature_setting(track):
+            self.log("signature", track, f"time signature {now}" + (" (auto)" if m is None else ""), source=source)
+        return before, now
+
+    def round_unit(self, track: int) -> Fraction:
+        """How far a written pattern is rounded up: whole bars of a fixed signature, else whole beats."""
+        m = self._signatures.get(track)
+        return m.bar if m is not None else Fraction(1)
+
+    def set_length(self, track: int, steps: int | None = None, div: str | None = None,
+                   source: str = "server") -> tuple[WriteReport, int]:
+        """The pattern's number of steps and / or step length (a name of the device's, "1/16"). The notes stay on
+        their steps (another step length makes them faster or slower); those past the new end go (undo brings them
+        back). -> (the write report, the notes removed)."""
+        if self.backend.writer is None:
+            raise NotSupported("this device cannot be written to")
+        if self.engine is not None and track in self.engine.armed:
+            raise ValueError(f"generative mode is armed on track {track}: disarm it first")
+        with self._lock:
+            seq = self.read(track)
+            lim = self.backend.writer.limits(track)
+            if seq.grid is None:
+                raise NotSupported("this device's patterns have no steps")
+            name = div or seq.grid.name
+            step = seq.grid.step if div is None else lim.grids.get(div)
+            if step is None:
+                raise ValueError(f"no step length {div!r}: use one of {', '.join(lim.grids)}")
+            if isinstance(steps, bool) or (steps is not None and not isinstance(steps, int)):
+                raise ValueError(f"not a number of steps: {steps!r}")
+            n = seq.grid.steps if steps is None else steps
+            if n < 1 or (lim.max_steps is not None and n > lim.max_steps):
+                raise ValueError(f"a pattern has 1..{lim.max_steps or 'any number of'} steps, not {n}")
+            new, removed = seq.copy(), 0
+            k = step / seq.grid.step
+            new.grid, new.length = Grid(step, n, name), step * n
+            new.events = []
+            for e in seq.copy().events:
+                e.start, e.length, e.offset = e.start * k, e.length * k, e.offset * k
+                if e.start >= new.length:
+                    removed += len(e.notes)
+                    continue
+                e.length = min(e.length, new.length - e.start)
+                new.events.append(e)
+            report = self.write(track, new, f"length {n} steps of {name}", source=source)
+        return report, removed
 
     def key(self, track: int) -> Key | None:
         return self.backend.keys.key(track) if self.backend.keys else None
@@ -333,7 +469,8 @@ class Session:
                     grids = self.backend.writer.limits(track).grids
                     name = "1/16" if "1/16" in grids else seq.grid.name
                     step = grids.get(name, seq.grid.step)
-                    steps = max(1, int(4 / step))
+                    bar = self._signatures.get(track, MT.COMMON).bar
+                    steps = max(1, int(bar / step))
                     new.grid = Grid(step, steps, name)
                     new.length = step * steps
             report = self.write(track, new, f"clear {what}", source=source)
@@ -393,6 +530,8 @@ class Session:
                     diffs.append(f"pan {pn.text} -> {t['pan']}")
                 if t.get("muted") is not None and t["muted"] != mu:
                     diffs.append("muted" if t["muted"] else "unmuted")
+            if t.get("signature") and t["signature"] != self.signature_setting(n):
+                diffs.append(f"time signature {self.signature_setting(n)} -> {t['signature']}")
             seq = s.sequences.get(n)
             if seq is not None and self.backend.reader is not None and not S.same_notes(seq, self.read(n)):
                 cur = self.read(n)
@@ -400,12 +539,65 @@ class Session:
             out.append(f"track {n}: " + ("; ".join(diffs) if diffs else "as saved"))
         return out
 
+    def _apply_generic(self, s, t: int, parts: list[str], foreign: bool) -> list[str]:
+        """A track of a saved state, as any device can take it: the notes fitted to its limits, the sound by name;
+        foreign (from another kind of device): the mix too, as far as the scales agree."""
+        from .music import notes_io as NIO
+
+        b = self.backend
+        out: list[str] = []
+        try:
+            td = s.track(t)
+        except ValueError:
+            return [f"track {t}: not in the state"]
+        seq = s.sequences.get(t)
+        if "notes" in parts and seq is not None and b.writer:
+            cur = self.read(t)
+            if (seq.kind == "drums") != (cur.kind == "drums"):
+                return [f"track {t}: saved as {seq.kind}, here {cur.kind}: left out"]
+            seq = seq.copy()
+            if foreign:
+                for e in seq.events:
+                    e.extras = {}  # (the other device's own data)
+            try:
+                seq, notes = NIO.fit(seq, b.writer.limits(t), seq.grid.name if seq.grid else None, round_to=None)
+                rep = b.writer.write(t, seq, f"state {s.name}")
+                out.append(f"track {t}: {rep.changed} step(s)" + "".join(f"; {n}" for n in notes + rep.notes))
+            except ValueError as e:
+                out.append(f"track {t}: notes not written ({e})")
+        if "sound" in parts and b.sounds and td.get("instrument"):
+            inst = td["instrument"]
+            group, _, name = inst.partition(" ")
+            if inst.upper().startswith("DRUMS KIT "):
+                group, name = None, inst[len("DRUMS kit "):]
+            try:
+                self.set_sound(t, name or inst, group if name else None)
+            except ValueError:
+                try:
+                    self.set_sound(t, inst)
+                except ValueError as e:
+                    out.append(f"track {t}: sound not set ({e})")
+        if foreign and "mix" in parts and b.mixer:
+            try:
+                if td.get("level"):
+                    self.set_track_level(t, "off" if td["level"] == "OFF" else td["level"])
+            except ValueError as e:
+                out.append(f"track {t}: level not set ({e})")
+            try:
+                if td.get("pan"):
+                    self.set_track_pan(t, td["pan"])
+            except ValueError as e:
+                out.append(f"track {t}: pan not set ({e})")
+            if td.get("muted") is not None:
+                self.set_track_muted(t, td["muted"])
+        return out
+
     def apply_state(self, tracks: list[int] | None = None, parts: list[str] | None = None, exact: bool = False,
                     backup: bool = True) -> list[str]:
         """Put the loaded state onto the device: `tracks` (all), `parts` (all the backend knows: notes, sound, mix,
         globals). exact: the device's own copy of its project, whole (the song must be stopped).
         Before, the device's state is saved as "before apply" (backup). Note changes can be undone per track.
-        -> what was done."""
+        -> what was done. The time signatures go with the notes."""
         from . import states as S
 
         s = self.loaded
@@ -419,8 +611,10 @@ class Session:
             if self.engine is not None and t in self.engine.armed:
                 raise ValueError(f"generative mode is armed on track {t}: disarm it first")
         dev = (s.data.get("device") or {}).get("backend")
-        if dev and dev != b.name:
-            raise S.StateError(f"the state was saved from another kind of device ({dev}), this is {b.name}")
+        foreign = bool(dev and dev != b.name)
+        if foreign and exact:
+            raise S.StateError(f"the state was saved from another kind of device ({dev}), this is {b.name}: only its "
+                               "notes, sounds and mix can be used, not the exact copy")
         if exact and self.playing(fresh=True):
             raise ValueError("stop the song first: the exact copy can only be loaded while it is stopped")
         out: list[str] = []
@@ -443,26 +637,25 @@ class Session:
                 out.append(f"exact copy of {s.name!r} loaded into the device")
             else:
                 parts = list(parts or (b.states.parts if b.states else ("notes", "sound")))
-                why = b.states.compatible(s.data["backend"]) if b.states and s.data.get("backend") else "no data"
+                why = (f"saved from another kind of device, {dev}" if foreign else
+                       b.states.compatible(s.data["backend"]) if b.states and s.data.get("backend") else "no data")
                 if b.states and why is None:
                     out += b.states.apply(s.data["backend"], tracks, parts)
-                else:  # another device / firmware: the generic part (notes, sound by name)
-                    out.append(f"(the device's own data cannot be used: {why}; the notes and sounds by name)")
+                else:  # another device / firmware: the generic part (notes, sound by name, mix, tempo)
+                    out.append(f"(the device's own data cannot be used: {why}; the notes, and sounds by name)")
                     for t in tracks:
-                        td = s.track(t)
-                        if "notes" in parts and t in s.sequences and b.writer:
-                            seq = s.sequences[t]
-                            rep = self.backend.writer.write(t, seq, f"state {s.name}")
-                            out.append(f"track {t}: {rep.changed} step(s)")
-                        if "sound" in parts and b.sounds and td.get("instrument"):
-                            inst = td["instrument"]
-                            group, _, name = inst.partition(" ")
-                            if inst.upper().startswith("DRUMS KIT "):
-                                group, name = None, inst[len("DRUMS kit "):]
-                            try:
-                                self.set_sound(t, name or inst, group if name else None)
-                            except ValueError as e:
-                                out.append(f"track {t}: sound not set ({e})")
+                        out += self._apply_generic(s, t, parts, foreign)
+                    if foreign and "globals" in parts and s.data.get("tempo") and self.tempo_range():
+                        _, now = self.set_tempo(s.data["tempo"])
+                        out.append(f"tempo {now:g} BPM")
+            if "notes" in (parts or ("notes",)):
+                for t in tracks:  # (how they are counted goes with the notes; older states do not say)
+                    sig = next((x.get("signature") for x in s.data.get("tracks", []) if x["track"] == t), None)
+                    if sig:
+                        try:
+                            self.set_signature(t, sig)
+                        except ValueError as e:
+                            out.append(f"track {t}: time signature not set ({e})")
             # the notes can be undone per track (as any write)
             for t, seq in before.items():
                 if not S.same_notes(seq, self.read(t)):

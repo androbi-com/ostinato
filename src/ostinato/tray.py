@@ -103,6 +103,8 @@ class Tray:
             if self.proc is not None and self.proc.poll() is not None:
                 return "off", "Ostinato stopped (see the log)"
             return "off", "Starting Ostinato..."
+        if s.get("virtual"):
+            return "ok" if s.get("connected") else "wait", "Virtual device (no hardware)"
         if s.get("connected"):
             return "ok", f"Connected: {s.get('firmware') or 'device'}"
         if s.get("backend"):
@@ -127,8 +129,14 @@ class Tray:
         if info:
             webbrowser.open(ui_url(info))
 
+    def virtual(self, _item=None) -> bool:
+        return bool(self.status and self.status.get("virtual"))
+
+    def use_virtual(self, *_):
+        threading.Thread(target=self._post, args=("/api/ui/virtual",), daemon=True).start()
+
     def release_or_reconnect(self, *_):
-        path = "/api/ui/disconnect" if self.connected() else "/api/ui/connect"
+        path = "/api/ui/disconnect" if self.connected() or self.virtual() else "/api/ui/connect"
         threading.Thread(target=self._post, args=(path,), daemon=True).start()
 
     def _post(self, path: str):
@@ -192,7 +200,10 @@ class Tray:
             Item("Open Ostinato", self.open_page, default=True, enabled=self.running),
             Item(self.status_text, None, enabled=False),
             Menu.SEPARATOR,
-            Item(lambda _: "Release the device" if self.connected() else "Reconnect the device",
+            Item("Use the virtual device", self.use_virtual,
+                 visible=lambda _: self.running() and not self.connected() and not self.virtual()),
+            Item(lambda _: "Close the virtual device" if self.virtual() else
+                 "Release the device" if self.connected() else "Reconnect the device",
                  self.release_or_reconnect, enabled=self.running),
             Item("Open the settings folder", self.open_folder),
             Item("Show the log", self.open_log),

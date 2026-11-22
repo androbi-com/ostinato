@@ -1,16 +1,22 @@
 # Ostinato: technical notes
 
-Ostinato lets Claude (Desktop and Code) and a browser page read and write music on a device over USB-MIDI: today an
-**M-VAVE FM-1 running SLOOP** ([isod89/sloop-fm1](https://github.com/isod89/sloop-fm1)). Everything musical
-(sequences, scales, staffs, note import, generative algorithms, gestures, undo, saved states) is generic; only getting
-things out of a device and into it is device-specific, in a **backend** that offers what it can as **capabilities**.
+Ostinato lets Claude (Desktop and Code) and a browser page read and write music on a device. There are two today:
+
+- the **virtual device** (`virtual_gm`): a sequencer in the computer that plays on a General MIDI synth. With it Ostinato
+  works standalone, without hardware;
+- an **M-VAVE FM-1 running SLOOP** ([isod89/sloop-fm1](https://github.com/isod89/sloop-fm1)) over USB-MIDI (`fm1_sloop`).
+
+Everything musical (sequences, scales and key signatures, time signatures, staffs, note import, generative algorithms,
+gestures, undo, saved states) is generic; only getting things out of a device and into it is device-specific, in a
+**backend** that offers what it can as **capabilities**. One device is in use at a time; it can be changed while
+the server runs.
 
 ## How it fits together
 
 ```
  Claude Desktop chat --stdio--> ostinato-mcp (shim) --+
  Claude Code session --stdio--> ostinato-mcp (shim) --+--HTTP 127.0.0.1:5317--> ostinato-device --USB MIDI--> FM-1
- browser (ostinato-device ui) ------------------------+
+ browser (ostinato-device ui) ------------------------+                              or --pipe--> virtual-player --MIDI--> a GM synth
 ```
 
 Inside `ostinato-device`:
@@ -19,24 +25,27 @@ Inside `ostinato-device`:
  tools (generic)       ostinato_show_track, ostinato_write_notes, ostinato_generate, ostinato_save_state ...
  ui_server (generic)   the browser page and /api/ui/*
        |               both offer only what the backend's capabilities allow; + the backend's own extra tools
- session (generic)     the active backend, undo (Sequence snapshots), change log, generative engine, saved states
-       |
- music (generic)       Sequence model, scales and spelling, text views, staffs, JSON / MIDI in, fitting to a
-       |               device's limits, generative algorithms, gestures (turn = vary, turn back = undo)
- backends              fm1_sloop (FM-1 hardware with SLOOP firmware) . later: others (e.g. a DAW)
+ session (generic)     the active backend, undo (Sequence snapshots), change log, generative engine, saved states,
+       |               time signatures
+ music (generic)       Sequence model, scales, keys and spelling, meters, text views, staffs, JSON / MIDI in, fitting
+       |               to a device's limits, generative algorithms, gestures (turn = vary, turn back = undo)
+ backends              virtual_gm (the virtual device: standalone), fm1_sloop (FM-1 hardware with SLOOP firmware);
+                       later: others (e.g. a DAW)
 ```
 
 - **`ostinato-device`** is the device server: the only program that talks to the device. You start it yourself and
   it runs until you stop it. It finds the FM-1's MIDI port, asks each backend whether the firmware is its own, and
-  runs that backend with a session; with nothing found it keeps looking every 3 s. It serves the tools over MCP at
+  runs that backend with a session; with nothing found it keeps looking every 3 s. The virtual device is used only when
+  asked for (the page, the tray, `ostinato_use_virtual_device`, `--virtual`), and left only when asked to. It serves the tools over MCP at
   `http://127.0.0.1:5317/mcp` and the browser page, on this computer only; every request needs the token it writes
   to `device.json` in the setup folder at start (Host and Origin are checked too, so web pages cannot reach it). A
   new token is made at every start.
 - **`ostinato-mcp`** is what Claude starts: a stdio shim that knows nothing about devices. It gets the tools from the
   device server (and shows the list it saved last, `tools.json`, while it is not running), forwards each call, and
   tells Claude when the list changes. Claude Code does not refresh a running session's tools on that notice (tested):
-  after the very first start of `ostinato-device`, after an update that adds tools, or when the backend changes,
-  restart Claude once.
+  after the very first start of `ostinato-device` or after an update that adds tools, restart Claude once. Without a
+  device the virtual device's tools are offered already, so using it needs no restart; a change to the FM-1 adds its own
+  three (`ostinato_parameters`, `ostinato_generative_mode`, `ostinato_link_info`) and removes `ostinato_set_key`.
 
 ## The generic model (`ostinato/model.py`)
 
@@ -45,37 +54,70 @@ Inside `ostinato-device`:
   backend's own per-event data (SLOOP: fill condition, parameter locks), carried through untouched. A step sequencer
   reports an optional **Grid** (step length, number of steps). Kind: melodic, chords, drums; drum notes are General
   MIDI voices (36 kick, 38 snare, 42 closed hat...), mapped by each backend to its own sounds.
+- **Meter**: a time signature (bar and beat lengths; 6/8, 9/8 and 12/8 have dotted-quarter beats), attached to each
+  Sequence the session reads (below). It is not part of the notes: two Sequences compare equal whatever theirs.
 - **TrackInfo** (how many tracks and which kind: the backend says; SLOOP has 4), **Key** (root, generic scale name),
   **WriteLimits** (what a writer takes: step lengths, steps, notes at once, which articulations), **WriteReport**,
   **MixValue** (a level or pan on the device's own scale, with its text and, for a level in dB, where 0 dB is and dB
   per unit), **DeviceEvent**, **ControlEvent** (an encoder turn or a button press).
+
+## Keys and key signatures (`ostinato/music/scales.py`)
+
+A track's **Key** (root, generic scale name) comes from its backend (`keys`): on SLOOP each track's ROOT / SCL, standalone
+one key for the three melodic tracks (the virtual device's settings or `ostinato_set_key`; default C major). Sixteen
+scales, chromatic (no key) included. It decides:
+
+- the **key signature** and the spelling of a staff (the scales with a major / minor / modal signature; whole tone, diminished
+  and chromatic have none), accidentals as a score has them, and note names everywhere else;
+- the notes the algorithms choose from (`scale_source`), and what `ostinato_scales` calls outside the scale.
+
+Notes already written do not change with the key. Drum tracks have none.
+
+## Time signatures (`ostinato/music/meter.py`, `session.py`)
+
+The sequencers do not know them, so they are Ostinato's, a setting per track: **auto** or fixed (2/4 to 7/4, 3/8, 6/8,
+7/8, 9/8, 12/8), kept in `signatures.json` per kind of device and in saved states (applied with the notes).
+
+- **auto** goes by the length in beats, not in steps (12 triplet steps are four beats): whole threes are 3/4, whole
+  fours 4/4; a length that is both (12 beats) follows the other tracks when they agree, else it is 3/4; any other is
+  4/4 with an incomplete last bar. 6/8 is as long as 3/4, so it is never guessed.
+- **Used by** staffs (bars, beams, rests, ties over the beat), the piano roll's bar lines, the text views' groups and
+  rows, the length of a cleared pattern, and writing: `ostinato_write_notes` rounds up to whole bars of a fixed
+  signature, with auto to whole beats. A MIDI file's signature is taken over when the track's is auto.
+- **A score of several tracks** shares its bars: equally long ones (3/4 with 6/8) keep their own signature, else the
+  score is in the one most tracks have, and its caption says so.
+- **Limit**: the FM-1 does not tell a loaded project from a loaded sound, so fixed signatures stay when another project
+  is loaded on it.
+
+`Session.set_length` changes a pattern's steps and step length through the writer (undoable; the notes stay on their
+steps, those past the new end go: SLOOP's own LEN would keep them hidden).
 
 ## Backends and capabilities (`ostinato/backends/base.py`)
 
 A backend implements only what it can; the levels above check and degrade (no instrument name: a staff without part
 names; no key: no key signature, sharps; no writer: no writing tools; no transport: no play button).
 
-| Capability | Interface | What it gives | SLOOP |
-| --- | --- | --- | --- |
-| `connection` | Connection | connect / disconnect / status / overview (always) | yes |
-| `tracks` | Tracks | the tracks and their kind | 4 (3 synth, drums) |
-| `reader` / `writer` | SequenceReader / SequenceWriter | a track's Sequence; write one within the device's WriteLimits | yes (steps <-> events) |
-| `keys` | KeyInfo | a track's key; the device's own key settings; the scales it offers | yes |
-| `instruments` | InstrumentInfo | a track's sound name | engine + preset, drum kit |
-| `tempo` | TempoInfo | tempo, time signature | yes |
-| `tempo_control` | TempoControl | set the tempo, within the device's range | whole BPM, 40..240 |
-| `changes` | ChangeFeed | notices of edits made on the device | yes (pushes) |
-| `parameters` | ParameterInfo | named parameters with values | yes |
-| `controls` | ControlInputs | knobs / buttons usable as triggers (generative mode) | the PHS knob, the keys |
-| `mixer` | TrackMixer | a track's mute, level and pan (as MixValues) | yes |
-| `sounds` | SoundSelector | the sounds a track can take, grouped (e.g. by engine); set one by name | factory presets, kits |
-| `states` | StateStore | the device's whole state as JSON-able data, written back by part; optionally an exact copy | yes |
-| `transport` | TransportControl | play / stop / toggle, and whether it plays | protocol 12+ |
+| Capability | Interface | What it gives | SLOOP | Virtual device |
+| --- | --- | --- | --- | --- |
+| `connection` | Connection | connect / disconnect / status / overview (always) | yes | yes (its process) |
+| `tracks` | Tracks | the tracks and their kind | 4 (3 synth, drums) | 4 (3 melodic, drums) |
+| `reader` / `writer` | SequenceReader / SequenceWriter | a track's Sequence; write one within the device's WriteLimits | yes (steps <-> events) | yes (Sequences as they are) |
+| `keys` | KeyInfo | a track's key; the device's own key settings; the scales it offers | per track, set on the device | one, set in Ostinato |
+| `instruments` | InstrumentInfo | a track's sound name | engine + preset, drum kit | GM sound, drum kit |
+| `tempo` | TempoInfo | tempo | yes | yes |
+| `tempo_control` | TempoControl | set the tempo, within the device's range | whole BPM, 40..240 | whole BPM, 40..240 |
+| `changes` | ChangeFeed | notices of edits made on the device | yes (pushes) | its process or output failing |
+| `parameters` | ParameterInfo | named parameters with values | yes | - |
+| `controls` | ControlInputs | knobs / buttons usable as triggers (generative mode) | the PHS knob, the keys | - |
+| `mixer` | TrackMixer | a track's mute, level and pan (as MixValues) | yes | yes (dB on every track) |
+| `sounds` | SoundSelector | the sounds a track can take, grouped (e.g. by engine); set one by name | factory presets, kits | 128 GM sounds, 8 GS kits |
+| `states` | StateStore | the device's whole state as JSON-able data, written back by part; optionally an exact copy | yes, with exact copy | yes |
+| `transport` | TransportControl | play / stop / toggle, and whether it plays | protocol 12+ | yes |
 
 An external MIDI controller would be another implementation of `controls` (interface only for now). A hardware
-backend also has `probe` (found on the MIDI ports); one that cannot be found that way (e.g. a DAW) would be chosen by
-configuration. Adding a backend: a package `ostinato/backends/<name>/` with a `Backend` subclass, added to `BACKENDS`
-in `ostinato/backends/__init__.py`.
+backend also has `probe` (found on the MIDI ports); the virtual device (`virtual`) is chosen by the user; one that cannot
+be found on the ports (e.g. a DAW) would be chosen by configuration. Adding a backend: a package
+`ostinato/backends/<name>/` with a `Backend` subclass, added to `BACKENDS` in `ostinato/backends/__init__.py`.
 
 ## Install and run
 
@@ -104,15 +146,16 @@ uv run --directory C:\path\to\ostinato ostinato-device
 | `ostinato-device ui` | Open the browser UI of the running device server |
 | `ostinato-device --port 5318` | Another HTTP port (or `OSTINATO_HTTP_PORT`) |
 | `ostinato-device --midi-port Felucca` | Only MIDI ports whose name contains this (or `OSTINATO_MIDI_PORT`) |
-| `ostinato-device --simulate [sloop]` | A simulated FM-1 with SLOOP (no hardware; or `OSTINATO_SIMULATE`) |
+| `ostinato-device --virtual` | Start with the virtual device (or `OSTINATO_VIRTUAL=1`) |
+| `ostinato-device --simulate [sloop]` | A simulated FM-1 with SLOOP (no hardware, silent; or `OSTINATO_SIMULATE`) |
 
 Other environment variables: `OSTINATO_CONFIG_DIR` (the setup folder, default `%APPDATA%\ostinato`, elsewhere
 `~/.config/ostinato`), `OSTINATO_LOG` (log level), and for SLOOP `SLOOP_SELECT_FOR_DESC` (`1`, default: may select
 another track for a moment to read its engine's parameter names).
 
 The setup folder holds `device.json` / `device.lock` (while the device server runs), `tools.json` (its last tool
-list), `generators\` (the algorithms' setups and `gesture.json`), `states\` (saved states) and one folder per backend
-(`fm1_sloop\knob.json`).
+list), `signatures.json` (fixed time signatures), `generators\` (the algorithms' setups and `gesture.json`), `states\` (saved states) and one folder per backend
+(`fm1_sloop\knob.json`; `virtual_gm\device.json`: its output and key, `virtual_gm\project.json`: its patterns).
 
 **One program talking to the device at a time.** The FM-1 answers one editor request at a time (with Windows MIDI
 Services several programs can open its port, but each receives every reply). Before using the official SLOOP web
@@ -127,19 +170,24 @@ canonicalize script path"): `uv sync --reinstall`, or `uv run python -m pytest` 
 
 - **Header**: the backend, firmware and port, **▶ Play / ■ Stop** (with the `transport` capability; it follows the
   device's own PLAY button), the tempo (a number field with the `tempo_control` capability: Enter, the arrows or
-  leaving the field sends it, Escape puts it back), and **Release** / **Reconnect** for the device.
+  leaving the field sends it, Escape puts it back), and **Release** / **Reconnect** for the device. On the virtual
+  device: its MIDI output, **Close**, **Switch to ...** when a real device seems to be plugged in, and **Restart** if its
+  process ended.
+- Without a device, **Use the virtual device**.
 - **Tracks**: each track as a step roll (or a drum grid) or as a staff, live: edits on the device, writes from
   Claude and generative runs show up within a second. Per track: the **sound menu** (presets grouped by engine; kits
-  on the drum track), **Mute**, **Level** and **Pan** sliders (sent when let go; double-click Pan to centre it), an
-  algorithm and **Vary** (one run), **Undo**, **Clear** (asks first), and generative mode (**Arm** with a control
-  such as the knob; **Disarm** keeps the notes, **Restore** goes back).
+  on the drum track), the pattern's **steps**, **step length** and **time signature**, **Mute**, **Level** and **Pan**
+  sliders (sent when let go; double-click Pan to centre it), an algorithm and **Vary** or, for those that replace the
+  pattern, **Initialize** (one run), **Undo**, **Clear** (asks first), and, where the device has `controls`, generative
+  mode (**Arm** with a control such as the knob; **Disarm** keeps the notes, **Restore** goes back).
 - **States**: save the device now (name, note, with or without the exact copy); the saved states (Load, Delete); the
   loaded state with its comparison with the device, track and part checkboxes, the exact-copy option and **Apply to
   the device** (asks first).
-- **Settings**: a form for every setup (the algorithms, `gesture.json`, the backend's controls such as the knob),
-  generated from the defaults files and their `_ui` hints. **Save** writes your file in the setup folder (checked:
+- **Settings**: a form for every setup (the algorithms, `gesture.json`, the backend's own: SLOOP's knob, the virtual
+  device's output and key), generated from the defaults files and their `_ui` hints. **Save** writes your file in the setup folder (checked:
   a bad value falls back to its default, and the card says so); **Reset to defaults** removes it.
-- **Activity**: the change log (device edits, writes, runs, undos, sounds, mix, states, play / stop, tempo, connection).
+- **Activity**: the change log (device edits, writes, runs, undos, sounds, mix, states, time signatures, play / stop, tempo, connection,
+  changes of device).
 
 The page is for this computer only. The server listens on 127.0.0.1 and checks the `Host` header (against DNS
 rebinding). `ostinato-device ui` opens `/ui/login?key=<token>` (the token from `device.json`), which sets an
@@ -154,8 +202,9 @@ All named `ostinato_*`; tracks are numbered from 1, notes with 60 = C4.
 | Tool | Needs | What it does |
 | --- | --- | --- |
 | `ostinato_status`, `ostinato_connect`, `ostinato_disconnect`, `ostinato_list_midi_ports` | (the device server) | Status and overview (incl. playback); take / release the device; MIDI ports |
+| `ostinato_use_virtual_device` | (the device server) | Work on the virtual device; `ostinato_connect` switches to a real one, `ostinato_disconnect` closes it |
 | `ostinato_show_track`, `ostinato_show_all_tracks` | reader | Text: `grid`, `list` (every detail), `roll` (piano roll); drums as a voice x step grid |
-| `ostinato_show_staff`, `ostinato_export_musicxml` | reader | Notation as an image; the same score as MusicXML |
+| `ostinato_show_staff`, `ostinato_export_musicxml` | reader | Notation as an image, with key and time signatures; the same score as MusicXML |
 | `ostinato_track_data` | reader | A track's Sequence as structured data |
 | `ostinato_refresh`, `ostinato_changes` | reader | Re-read from the device; the change log |
 | `ostinato_scales` | keys | Key, scale notes, the device's key settings, notes outside the scale; the scales it offers |
@@ -165,53 +214,60 @@ All named `ostinato_*`; tracks are numbered from 1, notes with 60 = C4.
 | `ostinato_instruments`, `ostinato_set_instrument` | sounds | The sounds a track can take (by engine; kits on drums); set one by name (`RHODES`, `DIGITAL / RHODES`, `909`), with suggestions for near misses |
 | `ostinato_play` | transport | `play`, `stop`, `toggle` (as PLAY), `status` |
 | `ostinato_set_tempo` | tempo_control | The tempo in BPM (`relative` for `+5` / `-10`); without a value: the tempo and its range |
+| `ostinato_set_signature` | reader | A track's time signature (`auto`, `3/4`, `6/8`...); without one: every track's |
+| `ostinato_set_length` | writer | The pattern's steps and / or step length |
 | `ostinato_write_notes`, `ostinato_write_midi` | writer | JSON notes / a .mid file onto a track, fitted to the device's limits (what was adapted is reported) |
-| `ostinato_clear_track` | writer | Remove all notes (length and step length kept, or `keep_length=false`: one bar of 1/16), or only one note (`note_only="A3"`) / one drum lane (`"HAT"`) |
+| `ostinato_clear_track` | writer | Remove all notes (length and step length kept, or `keep_length=false`: one bar of 1/16, of the fixed time signature or 4/4), or only one note (`note_only="A3"`) / one drum lane (`"HAT"`) |
 | `ostinato_undo` | writer | Undo the last write to a track (notes: writes, clears, runs, applied states; up to 30) |
 | `ostinato_generators`, `ostinato_generate` | writer | The algorithms and their setups; run one now |
 | `ostinato_generative_mode` | writer + controls | Arm a track: a control on the device drives the algorithm |
 | `ostinato_save_state`, `ostinato_list_states`, `ostinato_load_state`, `ostinato_show_state`, `ostinato_delete_state` | reader | Saved states: see below |
 | `ostinato_apply_state` | reader + writer | Put the loaded state on the device, whole or in part |
 | `ostinato_link_info` | (SLOOP's own) | Diagnostics of the MIDI link |
+| `ostinato_set_key` | (the virtual device's own) | The key of its melodic tracks |
 
 A JSON note: `{"note": "E4" | 64 | ["C4","E4","G4"], "start": 1, "length": 2, "accent", "slide", "velocity",
 "level", "ratchet"}`; drums `{"lane": "KICK" | GM note, ...}`; positions in steps of the track's grid or in beats
 (`unit`), where the grid is chosen to hold every position (the current one, else the finest that does).
 
 What can and cannot be undone: `ostinato_undo` restores a track's **notes** (Sequence snapshots). Sound, level, pan,
-mute, play and tempo are not undoable: their tools report the previous value, so it can be set again. A clear is refused
-while generative mode is armed on the track.
+mute, play, tempo, key and time signature are not undoable: all but play and key report the previous value, so it can
+be set again. A clear or a change of length is refused while generative mode is armed on the track. Undo does not go
+over a change of device.
 
-## Saved states (`ostinato/states.py`, `backends/fm1_sloop/states.py`)
+## Saved states (`ostinato/states.py`, each backend's `states`)
 
-The device's storage is small, so the whole state goes to a file on the computer: `<setup folder>\states\<name>.json`
+The whole state goes to a file on the computer (an FM-1 has room for very few songs): `<setup folder>\states\<name>.json`
 (a name), or any `.json` path.
 
 ```
 ostinato_state  1                      the format
 name, note, saved_at, device {backend, title, firmware}, tempo
-tracks   [ {track, name, kind, instrument, key, level, pan, muted, sequence} ]   generic: any device
+tracks   [ {track, name, kind, instrument, key, signature, meter, level, pan, muted, sequence} ]   generic: any device
 backend  { ... }                       the backend's own data (StateStore.capture)
 exact    {format, length, base64} | null   the device's own copy of its project
 ```
 
 - **Save** re-reads the device first (the firmware pushes only the selected track's edits).
 - **Load** only reads the file into the session (`Session.loaded`): `ostinato_load_state` shows what it holds and
-  compares it with the device per track (sound, level, pan, mute, notes); `ostinato_show_state` shows its notes.
+  compares it with the device per track (sound, level, pan, mute, time signature, notes); `ostinato_show_state` shows its notes.
 - **Apply** writes only what differs, by `tracks` and `parts`:
 
-  | Part | SLOOP |
-  | --- | --- |
-  | `notes` | the steps / drum steps, LEN / DIV / SWG / GATE, parameter locks, nudges, fill conditions |
-  | `sound` | the engine and preset (PRESET, when they differ), then every other track parameter (sound, arp, key) |
-  | `mix` | level, pan, mute (the drum track's level is the global drum level) |
-  | `globals` | the global settings (not the ones that are actions: ENG, LOAD, SAVE, SET, CLRSQ, INIT, NEW, SECT), the selected track |
+  | Part | SLOOP | Virtual device |
+  | --- | --- | --- |
+  | `notes` | the steps / drum steps, LEN / DIV / SWG / GATE, parameter locks, nudges, fill conditions; the time signature | the pattern; the time signature |
+  | `sound` | the engine and preset (PRESET, when they differ), then every other track parameter (sound, arp, key) | the GM sound or kit |
+  | `mix` | level, pan, mute (the drum track's level is the global drum level) | level, pan, mute |
+  | `globals` | the global settings (not the ones that are actions: ENG, LOAD, SAVE, SET, CLRSQ, INIT, NEW, SECT), the selected track | tempo, key |
 
   It works while the song plays. The device's state is saved as `before apply` first (pass `backup=False` to
   `Session.apply_state` to skip), and the notes of each changed track go on its undo stack. If the backend data does
   not fit the device (another firmware layout: steps, parameter or global counts), only the generic part is used:
-  the notes (fitted as any write) and the sounds by name. A state from another kind of device is refused.
-- **Exact**: `exact=True` puts back the device's own copy instead, every track and everything at once; refused while
+  the notes (fitted as any write) and the sounds by name.
+- **From another kind of device** (a sketch from the virtual device onto the FM-1, or back): the notes, time signatures,
+  level, pan, mute and tempo, as far as the scales agree (SLOOP's drum level has no dB), and sounds both have by name; what
+  could not be set is reported. The exact copy and the device's own data (locks, fill conditions...) are not used.
+- **Exact** (SLOOP): `exact=True` puts back the device's own copy instead, every track and everything at once; refused while
   the song plays (checked before the backup is taken).
 
 Not in a state: SLOOP's song sections and song order (flash slots and settings), user samples, FM6 patch banks, user
@@ -230,6 +286,8 @@ the track's own key or, on a chromatic track, borrowed from another track (`scal
 with no key at all, the pitch classes of the pattern. New notes stay near the pattern's range (`range`) and the
 previous note (`max_leap`, `motion`), favouring root / third / fifth (`tone_weights`); before a root or third, with
 `transition.probability`, a chromatic approach note.
+
+**initialize_fotf** (drums) replaces the pattern with the bass drum on every beat of the track's time signature.
 
 **random_initializer** replaces a sequence with random notes on its existing grid. `density` controls how many
 steps receive notes, `note_range` and `length_steps` constrain pitch and gate lengths, and `max_leap` shapes the
@@ -289,10 +347,33 @@ The editor protocol (SysEx `F0 7D 46 4C <cmd> ... F7`, every data byte 7 bit) is
 - **Threads**: the device's push worker logs into the session while holding the device's lock, so the session's log
   has a lock of its own (never take the session's write lock inside a device callback).
 
+## The virtual device (`backends/virtual_gm/`)
+
+A device inside the computer: what makes Ostinato work standalone, without hardware. Its patterns have SLOOP's layout (three melodic tracks and
+drums, up to 64 steps of the same step lengths, 4 notes a step), so what is made on it fits an FM-1.
+
+- **A process of its own** (`player.py`, started as `ostinato virtual-player`) holds the patterns, the clock and the
+  MIDI output. In the device server's process, drawing staffs made notes up to 46 ms late. The backend talks to it in
+  JSON lines over stdin / stdout (`link.py`) and keeps a mirror from the replies. The end of stdin ends it (also when
+  the device server was killed): notes off, project saved. If it dies, `ostinato_connect` (Restart on the page) starts
+  it again with the patterns of its file, at most a second old.
+- **Playing**: each track loops over its own length, counted from the start; a changed pattern is heard at once, in its
+  place; note-offs are kept apart from the pattern, so no note hangs. Levels, accents, slides (legato), ratchets and
+  nudges are played. Level 0 dB is MIDI volume 100.
+- **The output**: `auto` takes only a synth it knows by name (Microsoft GS Wavetable, FluidSynth, TiMidity), never
+  another instrument that is plugged in. The Microsoft synth can be opened once, so it is held only while playing, and
+  given back 3 s after the stop. An output that fails while playing is reported, and the clock goes on.
+- **Changing the device** (`device_server.DeviceManager`): `_load` starts the new backend, gives it a session that
+  takes over the log (and its numbering) and the loaded state, exchanges the MCP tools, then ends the old session and
+  backend. While the virtual device is used, MIDI ports are looked at by name only; nothing is sent to a device its own
+  editor may be using. A device that was released stays released when the virtual device is closed.
+- **Without a device** the tools are the virtual device's, each answering that none is connected: a client that does
+  not read a changed tool list again (Claude Code) has them when the virtual device is used later.
+
 ## Development
 
 ```
-uv run pytest                       # unit tests, the SLOOP backend on its simulator, the device server and the shim
+uv run pytest                       # unit tests, the virtual device (silent), SLOOP on its simulator, the server, the shim
 uv run python tools/hw_check.py     # the SLOOP backend on the real FM-1 (stop ostinato-device first)
 ```
 
@@ -304,13 +385,14 @@ The simulator (`backends/fm1_sloop/sim.py`) is seeded from the SLOOP web editor'
 | Path (`src/ostinato/`) | |
 | --- | --- |
 | `model.py` | The generic model |
-| `music/` | `scales.py`, `views.py` (text), `notation.py` (staffs), `notes_io.py` (JSON / MIDI in, fit), `drums.py` (GM voices) |
-| `generative/` | `base.py`, `melodic_swapper.py`, `random_initializer.py`, `art.py` (art_mutate / spice / dice), `engine.py` (runs, generative mode, gestures), `defaults/` |
+| `music/` | `scales.py`, `views.py` (text), `notation.py` (staffs), `notes_io.py` (JSON / MIDI in, fit), `meter.py` (time signatures), `drums.py` (GM voices) |
+| `generative/` | `base.py`, `melodic_swapper.py`, `random_initializer.py`, `initialize_fotf.py`, `art.py` (art_mutate / spice / dice), `engine.py` (runs, generative mode, gestures), `defaults/` |
 | `session.py`, `tools.py` | The session (undo, change log, engine, mix, sounds, playback, saved states); the generic tools by capability |
 | `states.py` | Saved-state files: format, Sequence <-> JSON, list / read / write / delete |
 | `setup.py`, `config.py` | JSON setups (defaults + yours, checked); the setup folder |
 | `backends/base.py`, `backends/__init__.py` | The backend interface and capabilities; the known backends |
 | `backends/fm1_sloop/` | `backend.py` (capabilities, steps <-> events), `states.py` (capture / apply), `keys.py`, `controls.py`, `protocol.py`, `link.py`, `device.py` (sync, writes, presets, mix, LIVE, backup objects), `state.py`, `render.py` (overview, parameters), `sim.py` + `data/` (simulator) |
+| `backends/virtual_gm/` | `player.py` (the device's process: memory, sequencer, MIDI output), `link.py` (the pipe to it), `backend.py` (capabilities, settings, states), `gm.py` (names) |
 | `device_server.py`, `shim.py`, `midi.py`, `owner.py` | `ostinato-device`, `ostinato-mcp`, MIDI ports, the single-instance lock |
 | `ui_server.py`, `ui/` | The browser UI: the access gate, the `/api/ui/*` routes; the page, as ES modules without a build step: `store.js` (the page's state as signals, polling, actions), `api.js`, the Preact components `header.js` and `tracks.js`, `roll.js` (the piano roll), `states.js` / `settings.js` / `activity.js` (build their DOM with `dom.js`), `app.js` (the start); `vendor/` holds Preact, htm and signals unmodified (versions and licenses in its README) |
 | `launcher.py`, `tray.py`, `icon.py`, `claude_config.py` | The Windows bundle: one CLI for everything, the tray app, the drawn icon, Claude Desktop's config (below) |
@@ -333,7 +415,7 @@ PyInstaller (`installer\ostinato.spec`) into `dist\Ostinato\`, checks that the b
   sheet-music corpus is left out (unused, 90 MB); verovio's renamed C++ runtime (`verovio.libs`) is kept explicitly.
 - **The tray app** (`tray.py`, also `ostinato-tray` in a Python install) starts the device server hidden (or uses
   one that runs), with its output in `<setup folder>\logs\device.log`; its icon's dot is green when the device is
-  connected, amber while it waits; the menu opens the page, releases / reconnects the device, opens the setup folder
+  connected (also the virtual one), amber while it waits; the menu opens the page, uses or closes the virtual device, releases / reconnects the device, opens the setup folder
   or the log, and quits (stopping the device server). A second start only opens the page (a named mutex);
   `--no-open` starts without opening the page (the sign-in shortcut).
 - **The installer** installs per user, without administrator rights, to `%LOCALAPPDATA%\Programs\Ostinato`: Start
@@ -365,8 +447,10 @@ with any change to the dependencies.
 | Tests (`tests/`) | |
 | --- | --- |
 | `test_music.py` | Scales and spelling, notes in, fitting to a device's limits, text views, staffs |
+| `test_meter.py` | Time signatures and pattern lengths: the rule, staffs, views, writing, session, tools |
 | `test_generative.py`, `test_art.py` | The algorithms and gestures; the session on SLOOP (undo, clear, sounds, mix) |
 | `test_protocol.py`, `test_backend_sloop.py`, `test_sync.py` | SLOOP: encoders / parsers, the capabilities on the simulator, pushes |
+| `test_virtual.py`, `test_switch.py` | The virtual device (sequencer, player, backend); changing the device while the server runs |
 | `test_states.py` | Saved states: save, load, compare, apply whole / in part / exactly, undo |
 | `test_daemon.py`, `test_owner.py`, `test_ui.py` | The device server and shim, the single-instance lock, the page's routes |
 | `test_claude_config.py` | The installer's Claude Desktop config helper: adds / removes only its own entry |

@@ -48,6 +48,7 @@ class Generator(Setup):
     defaults_dir = DEFAULTS_DIR
     description: ClassVar[str] = ""
     kinds: ClassVar[tuple[str, ...]] = ("melodic", "chords")  # the sequence kinds it works on
+    initializes: ClassVar[bool] = False  # it makes a new pattern rather than varying the one there is
     order: ClassVar[int] = 100  # where lists show it (the first that fits a track is the UI's default)
 
     def __init__(self, cfg: dict):

@@ -5,7 +5,8 @@ import { api } from "./api.js";
 import { html } from "./html.js";
 import { drawRoll } from "./roll.js";
 import {
-  act, algoChoice, can, collapsed, controlChoice, notesVersion, released, setKey, state, toggleTrack, trackData, views,
+  act, algoChoice, can, collapsed, controlChoice, isVirtual, notesVersion, released, setKey, state, toggleTrack, trackData,
+  views,
 } from "./store.js";
 
 // the cards, or why there are none
@@ -13,10 +14,18 @@ export function Tracks() {
   const st = state.value;
   if (!st) return null;
   if (!st.tracks.length) {
-    return html`<div class="notice">${
-      st.status.connected ? "The device is still being read."
-      : released(st) ? "The device is released. Reconnect takes it back (e.g. after its own editor)."
-      : "No device detected yet. Plug it in by USB; the device server looks for it every few seconds."}</div>`;
+    return html`
+      <div class="notice">
+        <p>${
+          st.status.connected ? "The device is still being read."
+          : isVirtual(st) ? "The virtual device stopped. Restart starts it again; its patterns are kept."
+          : released(st) ? "The device is released. Reconnect takes it back (e.g. after its own editor)."
+          : "No device detected yet. Plug it in by USB; the device server looks for it every few seconds."}</p>
+        ${!st.status.connected && !isVirtual(st) && html`
+          <p>No device at hand? The virtual device has four tracks of up to 64 steps and plays them on this computer with
+            General MIDI sounds.</p>
+          <button class="primary" onClick=${() => act("/api/ui/virtual", {}, "Virtual device")}>Use the virtual device</button>`}
+      </div>`;
   }
   return st.tracks.map(t => html`<${TrackCard} key=${t.track} t=${t} st=${st} />`);
 }
@@ -26,7 +35,7 @@ function TrackCard({ t, st }) {
   const folded = !!collapsed.value[t.track];
   const view = views.value[t.track] || "roll";
   const data = trackData.value[t.track];
-  const grid = !data || data.error ? "" : data.grid ? `${data.grid.steps} × ${data.grid.name}` : `${data.length} beats`;
+  const known = data && !data.error;
   // the Steps / Staff buttons
   const viewButton = (name, label) => html`
     <button aria-pressed=${view === name} onClick=${() => setKey(views, t.track, name)}>${label}</button>`;
@@ -42,7 +51,7 @@ function TrackCard({ t, st }) {
         ${can("sounds") ? html`<${SoundSelect} t=${t} />` : html`<span class="track-title">${t.instrument || t.name}</span>`}
         <span class="tag">${t.kind}</span>
         ${t.key && html`<span class="tag key">${t.key}</span>`}
-        ${grid && html`<span class="tag">${grid}</span>`}
+        ${known && html`<${Pattern} t=${t} st=${st} data=${data} />`}
         ${t.muted && html`<span class="tag">MUTED</span>`}
         <span class="spacer"></span>
         <div class="seg" role="group">${viewButton("roll", "Steps")}${viewButton("staff", "Staff")}</div>
@@ -53,6 +62,44 @@ function TrackCard({ t, st }) {
         ${!folded && (view === "staff" ? html`<${Staff} track=${t.track} />` : html`<${Roll} data=${data} />`)}
       </div>
     </article>`;
+}
+
+// The pattern's length (steps, step length) where the device can be written to, and its time signature.
+function Pattern({ t, st, data }) {
+  const armed = st.armed.some(a => a.track === t.track);
+  const set = (what, body, label) => act(`/api/ui/track/${t.track}/${what}`, body, label);
+  const [steps, , commitSteps] = usePending(data.grid ? data.grid.steps : 0, v => set("length", { steps: v }, "Steps"));
+  const [div, , commitDiv] = usePending(data.grid ? data.grid.name : "", v => set("length", { div: v }, "Step length"));
+  const [sig, , commitSig] = usePending(data.signature, v => set("signature", { signature: v }, "Time signature"));
+  const lim = data.limits;
+  // a number in the range is sent; anything else is put back
+  const onSteps = e => {
+    const v = Number(e.target.value);
+    if (e.target.value !== "" && Number.isInteger(v) && v >= 1 && (!lim.max_steps || v <= lim.max_steps)) {
+      if (v !== data.grid.steps) commitSteps(v);
+    } else e.target.value = data.grid.steps;
+  };
+  const divs = lim ? (lim.grids.includes(div) ? lim.grids : [div, ...lim.grids]) : [];
+  return html`
+    <!-- the length -->
+    ${!data.grid ? html`<span class="tag">${data.length} beats</span>`
+      : !can("writer") || !lim ? html`<span class="tag">${`${data.grid.steps} × ${data.grid.name}`}</span>`
+      : html`<span class="pattern">
+          <input type="number" inputmode="numeric" min="1" max=${lim.max_steps} step="1" value=${steps} disabled=${armed}
+            aria-label=${`Steps of track ${t.track}`} title="Steps in the pattern (shorter: the notes past the end go; Undo brings them back)"
+            onChange=${onSteps} />
+          <span>×</span>
+          <select value=${div} disabled=${armed} aria-label=${`Step length of track ${t.track}`}
+            title="Step length (the notes stay on their steps)"
+            onChange=${e => commitDiv(e.target.value)}>
+            ${divs.map(x => html`<option key=${x} value=${x}>${x}</option>`)}</select></span>`}
+    <!-- the time signature -->
+    ${data.meter && html`
+      <select class="signature" value=${sig} aria-label=${`Time signature of track ${t.track}`}
+        title="Time signature: bars of the staff and the steps (the notes do not change). auto: by the length; 6/8 is never guessed"
+        onChange=${e => commitSig(e.target.value)}>
+        <option value="auto">${sig === "auto" ? `auto (${data.meter.name})` : "auto"}</option>
+        ${st.signatures.map(x => html`<option key=${x} value=${x}>${x}</option>`)}</select>`}`;
 }
 
 // What the user just set, shown until the server's answer is in: a poll meanwhile must not put the old value back.
@@ -110,13 +157,14 @@ function Staff({ track }) {
 }
 
 // ---------------------------------------------------------------- the sound
-// The sounds a track can take (presets grouped by engine; kits on the drum track): fetched once per kind of track.
+// The sounds a track can take (presets grouped by engine; kits on the drum track): fetched once per device and kind
+// of track.
 const sounds = signal({});
 const asked = {};
 
 // the sounds for this kind of track ([] until they are there; asked for once)
 function loadSounds(t) {
-  const kind = t.kind === "drums" ? "drums" : "synth";
+  const kind = `${state.value.status.backend} ${t.kind === "drums" ? "drums" : "synth"}`;
   asked[kind] ||= api(`/api/ui/track/${t.track}/sounds`)
     .then(r => setKey(sounds, kind, r.sounds)).catch(() => { delete asked[kind]; });
   return sounds.value[kind] || [];
@@ -135,7 +183,7 @@ function SoundSelect({ t }) {
   for (const x of loadSounds(t)) {
     const value = JSON.stringify([x.group, x.name]);
     (groups[x.group] ||= []).push({ value, name: x.name });
-    if (!found && (cur === `${x.group} ${x.name}` || (x.group === "KIT" && cur.endsWith(` ${x.name}`)))) found = value;
+    if (!found && (cur === `${x.group} ${x.name}` || cur === x.name || (x.group === "KIT" && cur.endsWith(` ${x.name}`)))) found = value;
   }
   return html`
     <select class="track-title sound" aria-label=${`Sound of track ${t.track}`} title="Choose this track's sound"
@@ -210,7 +258,7 @@ function TrackActions({ t, st }) {
 
 // choose an algorithm and run it once
 function Vary({ t, algos, algo, armed, post }) {
-  const initialize = algo === "random_initializer";
+  const initialize = algos.some(a => a.name === algo && a.initializes);
   return html`
     <div class="group">
       <select aria-label="Algorithm" value=${algo} onChange=${e => setKey(algoChoice, t.track, e.target.value)}>

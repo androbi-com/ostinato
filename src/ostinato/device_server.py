@@ -4,12 +4,14 @@
     ostinato-device stop               stop the one that runs
     ostinato-device ui                 open its browser UI (http://127.0.0.1:<port>/)
     ostinato-device status             is it running, which backend, is the device connected
-    ostinato-device --simulate sloop   with a simulated device of that backend (no hardware)
+    ostinato-device --virtual          with the virtual device (no hardware; General MIDI sounds)
+    ostinato-device --simulate sloop   with a simulated device of that backend (no hardware, silent; for tests)
 
 It finds the device's MIDI ports (ostinato.midi), asks each backend (ostinato.backends) whether the firmware is its own, and
 runs that backend with a session (ostinato.session): the generic tools its capabilities allow (ostinato.tools) and its own are
-served next to the device server's (ostinato_status, ostinato_connect, ostinato_disconnect, ostinato_list_midi_ports). With no device
-found (not plugged in, released, a firmware no backend knows) it keeps looking every few seconds.
+served next to the device server's (ostinato_status, ostinato_connect, ostinato_use_virtual_device, ostinato_disconnect, ostinato_list_midi_ports). With no device
+found (not plugged in, released, a firmware no backend knows) it keeps looking every few seconds. The virtual device
+(ostinato.backends.virtual_gm) is used when the user asks for it (ostinato_use_virtual_device, the page, --virtual).
 
 MCP over HTTP at http://127.0.0.1:<port>/mcp (default port 5317, OSTINATO_HTTP_PORT or --port), on this computer only.
 Every request needs the token from `device.json` in the setup folder (ostinato.config; written at start, removed at the
@@ -18,7 +20,7 @@ end); Host and Origin must be this computer's, so web pages cannot reach it. The
 time: a second start says where the first one runs.
 
 Environment: OSTINATO_HTTP_PORT, OSTINATO_MIDI_PORT (a substring of the device's MIDI port name), OSTINATO_SIMULATE (a backend name),
-OSTINATO_CONFIG_DIR, OSTINATO_LOG.
+OSTINATO_VIRTUAL (1: as --virtual), OSTINATO_CONFIG_DIR, OSTINATO_LOG.
 """
 from __future__ import annotations
 
@@ -37,7 +39,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import __version__
-from .config import config_dir
+from .config import config_dir, env_flag
 
 log = logging.getLogger("ostinato.device")
 
@@ -50,6 +52,8 @@ server.
 Start with ostinato_status: it says whether a device is connected and which firmware it runs. The tools for what the
 device can do are there once it is detected (tracks are numbered from 1; how many, and which kind, the device says).
 ostinato_disconnect releases the device (e.g. for the firmware's own editor); ostinato_connect takes it back.
+With no device, ostinato_use_virtual_device gives the user one inside the computer (General MIDI sounds): offer it, or
+use it when they ask to work without hardware. It is never used by itself.
 """
 
 
@@ -80,76 +84,115 @@ def _api(info: dict, path: str, method: str = "GET", timeout: float = 5.0) -> di
 
 class DeviceManager:
     """Finds the device, detects which backend it needs, runs that backend with a session, and registers the
-    generic tools its capabilities allow (ostinato.tools) plus its own on `mcp`."""
+    generic tools its capabilities allow (ostinato.tools) plus its own on `mcp`. The device can change while it runs:
+    to the virtual device (use_virtual, when the user asks for it) and back to a real one (connect).
 
-    def __init__(self, mcp, port_hint: str | None = None, simulate: str | None = None):
+    Without a device the tools are the virtual device's, each answering that none is connected: a client that does
+    not read a changed tool list again (Claude Code) then has them when one is."""
+
+    def __init__(self, mcp, port_hint: str | None = None, simulate: str | None = None, virtual: bool = False):
         self.mcp = mcp
         self.port_hint = port_hint
         self.simulate = simulate
+        self.virtual_at_start = virtual
         self.backend = None
         self.backend_cls = None
         self.session = None
         self.detected: dict | None = None  # what the probe said
-        self.released = False  # ostinato_disconnect before a backend was loaded: stop looking
+        self.released = False  # the device was given away (ostinato_disconnect): stop looking
         self.last_scan = "not yet"
+        self.hardware: list[str] = []  # while the virtual device is used: ports that may be a real one
         self.tools_version = 0
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()  # loading, switching, scanning
         self._stop = threading.Event()
-        self._base_tools = {t.name for t in mcp._tool_manager.list_tools()}
+        self._last_session = None  # (the next one takes over its log)
+        self._tool_names: list[str] = []
 
     # ---- the device server's life
     def start(self) -> None:
         if self.simulate:
-            from .backends import backend_classes, by_name, names
-
-            cls = by_name(self.simulate) or next((c for c in backend_classes()
-                                                  if c.name.endswith("_" + self.simulate)), None)
-            if cls is None or cls.simulator() is None:
-                raise SystemExit(f"no simulator for {self.simulate!r} (backends: {', '.join(names())})")
-            self._load(cls, None, cls.simulator(), {"firmware": f"{cls.title}, simulated"})
+            self._load_simulated()
         else:
-            threading.Thread(target=self._scan_loop, name="ostinato-detect", daemon=True).start()
-        self.save_tools()
+            self._idle()
+            if self.virtual_at_start:
+                try:
+                    self.use_virtual()
+                except Exception:
+                    log.exception("the virtual device could not be started")
+        threading.Thread(target=self._scan_loop, name="ostinato-detect", daemon=True).start()
 
     def stop(self) -> None:
         self._stop.set()
         with self._lock:
-            if self.session is not None and self.session.engine is not None:
-                self.session.engine.disarm_all()  # (controls back as they were; the patterns stay)
-            if self.backend is not None:
-                try:
-                    self.backend.stop()
-                except Exception:
-                    log.exception("stopping the backend")
+            self._end(self.backend, self.session)
+
+    @staticmethod
+    def _end(backend, session) -> None:
+        if session is not None:
+            session.close()  # (controls back as they were; the patterns stay)
+        if backend is not None:
+            try:
+                backend.stop()
+            except Exception:
+                log.exception("stopping the backend")
 
     # ---- detection
     def _scan_loop(self) -> None:
-        while not self._stop.is_set() and self.backend is None:
-            if not self.released:
-                try:
+        while not self._stop.is_set():
+            try:
+                if self.backend is None and not self.released:
                     self.scan()
-                except Exception:
-                    log.exception("scanning for the device")
+                elif self.is_virtual():
+                    self.hardware = self._hardware_ports()
+            except Exception:
+                log.exception("scanning for the device")
             self._stop.wait(SCAN_INTERVAL_S)
 
-    def scan(self, port_hint: str | None = None) -> bool:
-        """Look on every MIDI port that may be the device and ask each backend that can be probed."""
+    def is_virtual(self) -> bool:
+        cls = self.backend_cls
+        return cls is not None and cls.virtual
+
+    @staticmethod
+    def _candidates(hint: str | None) -> tuple[list, list[tuple[str, str]]]:
+        """The backends that can be found on the MIDI ports, and the port pairs that may be a device."""
         import re
 
         from .backends import backend_classes
-        from .midi import MidoTransport, base_name, candidate_pairs
+        from .midi import candidate_pairs
+
+        classes = [c for c in backend_classes() if c.port_pattern is not None]
+        if not classes:
+            return [], []
+        pattern = re.compile("|".join(f"(?:{c.port_pattern.pattern})" for c in classes), re.I)
+        prefer = tuple(p for c in classes for p in c.port_prefer)
+        return classes, candidate_pairs(hint, pattern, prefer)
+
+    def _hardware_ports(self) -> list[str]:
+        """By name only: nothing is sent to it (its own editor may be using it)."""
+        from .midi import base_name
+
+        if self.simulate:
+            return [f"{self.simulate} (simulated)"]
+        return [base_name(i) for i, _ in self._candidates(self.port_hint)[1]]
+
+    def scan(self, port_hint: str | None = None) -> bool:
+        """Look on every MIDI port that may be the device and ask each backend that can be probed. Found: it is used
+        from now on (instead of the virtual device)."""
+        from .midi import MidoTransport, base_name
 
         with self._lock:
-            if self.backend is not None:
+            if self._stop.is_set():
+                return False
+            if self.backend is not None and not self.is_virtual():
                 return True
-            classes = [c for c in backend_classes() if c.port_pattern is not None]
+            if self.simulate:
+                self._load_simulated()
+                return True
+            hint = port_hint or self.port_hint
+            classes, pairs = self._candidates(hint)
             if not classes:
                 self.last_scan = "no backend that can be found on the MIDI ports"
                 return False
-            pattern = re.compile("|".join(f"(?:{c.port_pattern.pattern})" for c in classes), re.I)
-            prefer = tuple(p for c in classes for p in c.port_prefer)
-            hint = port_hint or self.port_hint
-            pairs = candidate_pairs(hint, pattern, prefer)
             if not pairs:
                 self.last_scan = ("no MIDI port a backend recognises" + (f" (matching {hint!r})" if hint else "")
                                   + ": is it plugged in by USB?")
@@ -178,16 +221,55 @@ class DeviceManager:
             self.last_scan = "; ".join(notes)
             return False
 
+    # ---- the device in use
+    def _load_simulated(self) -> None:
+        from .backends import backend_classes, by_name, names
+
+        cls = by_name(self.simulate) or next((c for c in backend_classes()
+                                              if c.name.endswith("_" + self.simulate)), None)
+        if cls is None or cls.simulator() is None:
+            raise SystemExit(f"no simulator for {self.simulate!r} (backends: {', '.join(names())})")
+        self._load(cls, None, cls.simulator(), {"firmware": f"{cls.title}, simulated"})
+
     def _load(self, cls, port_hint: str | None, factory: Callable | None, detected: dict) -> None:
-        from . import tools
+        """Use this backend from now on, instead of the one in use (if any)."""
         from .session import Session
 
-        log.info("detected %s: %s", cls.title, detected.get("firmware"))
-        backend = cls()
-        backend.start(port_hint, factory)
-        self.backend, self.backend_cls, self.detected = backend, cls, detected
-        self.session = Session(backend)
-        tools.register(self.mcp, self.session)
+        with self._lock:
+            log.info("using %s: %s", cls.title, detected.get("firmware"))
+            backend = cls()
+            backend.start(port_hint, factory)  # (first: if it fails, what is in use stays in use)
+            old = (self.backend, self.session)
+            session = Session(backend, previous=self._last_session)
+            self.backend, self.backend_cls, self.detected, self.session = backend, cls, detected, session
+            self.released, self.hardware = False, []
+            session.log("connection", None, f"using {cls.title}")
+            self._use_tools(session)
+            self._end(*old)
+
+    def _idle(self) -> None:
+        """No device (any more)."""
+        from .backends import virtual_class
+        from .session import Session
+
+        with self._lock:
+            old = (self.backend, self.session)
+            self.backend = self.backend_cls = self.session = self.detected = None
+            self.hardware = []
+            cls = virtual_class()
+            if cls is not None:
+                idle = Session(cls(), previous=self._last_session)  # (never started: its tools say so)
+                self._use_tools(idle)
+                idle.close()
+            self._end(*old)
+
+    def _use_tools(self, session) -> None:
+        from . import tools
+
+        for n in self._tool_names:
+            self.mcp.remove_tool(n)
+        self._tool_names = tools.register(self.mcp, session)
+        self._last_session = session
         self.save_tools()
 
     # ---- the tool list, for the shim
@@ -213,44 +295,92 @@ class DeviceManager:
     # ---- what the device-level tools say
     def status_text(self) -> str:
         from . import tools
-
-        if self.backend is not None:
-            return (f"{self.backend_cls.title}: {self.detected.get('firmware')}.\n\n"
-                    + self.backend.connection.overview() + tools.status_lines(self.session))
         from .backends import backend_classes
 
-        known = ", ".join(c.title for c in backend_classes())
+        backend, cls, session = self.backend, self.backend_cls, self.session
+        if backend is not None and session is not None:
+            text = (f"{cls.title}: {(self.detected or {}).get('firmware')}.\n\n"
+                    + backend.connection.overview() + tools.status_lines(session))
+            if self.is_virtual():
+                text += ("\n\nThis is the virtual device (no hardware). "
+                         + (f"A real one may be plugged in ({', '.join(self.hardware)}): ostinato_connect switches to it."
+                            if self.hardware else "ostinato_connect looks for a real one."))
+            elif not backend.connection.status().get("connected"):
+                text += "\n\nostinato_use_virtual_device works without the hardware meanwhile."
+            return text
+        known = ", ".join(c.title for c in backend_classes() if not c.virtual)
         if self.released:
-            return f"No device connected: released by ostinato_disconnect. ostinato_connect looks for it again. Known: {known}."
-        return f"No device detected yet ({self.last_scan}). Looking every {SCAN_INTERVAL_S:.0f} s; known: {known}."
+            text = f"No device connected: released by ostinato_disconnect. ostinato_connect looks for it again. Known: {known}."
+        else:
+            text = f"No device detected yet ({self.last_scan}). Looking every {SCAN_INTERVAL_S:.0f} s; known: {known}."
+        return text + (" Without one: ostinato_use_virtual_device (4 tracks, played with General MIDI sounds by this "
+                       "computer).")
+
+    def _hardware_backend(self):
+        with self._lock:
+            return self.backend if self.backend is not None and not self.is_virtual() else None
 
     def connect(self, port: str | None) -> str:
-        if self.backend is not None:
-            return self.backend.connection.connect(port)
-        self.released = False
-        if self.scan(port):
-            return f"Found {self.backend_cls.title}: {self.detected.get('firmware')}.\n\n" + \
-                self.backend.connection.overview()
-        return f"No device found: {self.last_scan}"
+        hw = self._hardware_backend()
+        if hw is not None:  # (not under the lock: a release meanwhile must not wait for it)
+            return hw.connection.connect(port)
+        with self._lock:
+            was_virtual = self.is_virtual()
+            self.released = False
+            if self.scan(port):
+                return f"Found {self.backend_cls.title}: {self.detected.get('firmware')}.\n\n" + \
+                    self.backend.connection.overview()
+            if was_virtual:
+                text = f"No device found: {self.last_scan}. The virtual device stays in use."
+                if not self.backend.connection.status().get("connected"):
+                    text += " " + self.backend.connection.connect()
+                return text
+            return f"No device found: {self.last_scan}"
+
+    def use_virtual(self) -> str:
+        """Work with the virtual device from now on (a real one is released)."""
+        from .backends import virtual_class
+
+        with self._lock:
+            if self.is_virtual():
+                return self.backend.connection.connect()
+            cls = virtual_class()
+            if cls is None:
+                raise RuntimeError("the virtual device is not available")
+            released = self.released
+            if self.backend is not None:  # (a device given away, e.g. to its own editor, is not taken back later)
+                released = self.backend.connection.status().get("sync") == "disconnected"
+            self._load(cls, None, None, {"firmware": cls.firmware})
+            self.released = released
+            return self.backend.connection.connect()
 
     def disconnect(self) -> str:
-        if self.backend is not None:
-            if self.session.engine is not None:
-                self.session.engine.disarm_all()  # (the controls go back while the device is still there)
-            return self.backend.connection.disconnect()
-        self.released = True
-        return "Not connected to a device; the device server stops looking for one until ostinato_connect."
+        session, hw = self.session, self._hardware_backend()
+        if hw is not None:
+            if session is not None and session.engine is not None:
+                session.engine.disarm_all()  # (the controls go back while the device is still there)
+            return hw.connection.disconnect()
+        with self._lock:
+            if self.is_virtual():
+                self._idle()
+                return ("The virtual device is closed; its patterns are kept. "
+                        + ("The real device stays released until ostinato_connect." if self.released else
+                           "Looking for a real device again."))
+            self.released = True
+            return "Not connected to a device; the device server stops looking for one until ostinato_connect."
 
     def status(self) -> dict:
-        d = {"backend": self.backend_cls.name if self.backend_cls else None,
-             "capabilities": self.backend.capabilities() if self.backend else [],
+        backend, cls, session = self.backend, self.backend_cls, self.session
+        d = {"backend": cls.name if cls else None,
+             "capabilities": backend.capabilities() if backend else [],
              "detected": self.detected, "scan": self.last_scan, "released": self.released,
+             "virtual": bool(cls and cls.virtual), "hardware": list(self.hardware),
              "tools_version": self.tools_version, "armed": []}
-        if self.backend is not None:
-            d.update(self.backend.connection.status())
-            if self.session.engine is not None:
+        if backend is not None:
+            d.update(backend.connection.status())
+            if session is not None and session.engine is not None:
                 d["armed"] = [{"track": a.track, "algorithm": a.algorithm, "runs": a.runs}
-                              for a in self.session.engine.armed.values()]
+                              for a in list(session.engine.armed.values())]
         else:
             d.update({"connected": False, "port": None, "firmware": None, "sync": "no device detected"})
         return d
@@ -276,14 +406,30 @@ def build_mcp(manager_ref: dict):
 
     @mcp.tool()
     async def ostinato_connect(port: str | None = None) -> str:
-        """Connect to the device (again) and read everything; then follow changes made on it.
+        """Connect to the device (again) and read everything; then follow changes made on it. While the virtual
+        device is used: look for a real one and switch to it.
         `port`: optional substring of the MIDI port name (default: auto-detect). Takes a few seconds."""
         return await run(manager_ref["m"].connect, port)
 
     @mcp.tool()
+    async def ostinato_use_virtual_device() -> str:
+        """Work without hardware: use the virtual device, a sequencer inside this computer (tracks 1-3 melodic, track
+        4 drums, up to 64 steps each) that plays with General MIDI sounds. For when no device is connected; a
+        connected one is released. Its patterns are kept on this computer. All other tools then work on it.
+        ostinato_connect switches to a real device, ostinato_disconnect closes it."""
+        def use():
+            try:
+                return manager_ref["m"].use_virtual()
+            except Exception as e:
+                log.exception("the virtual device")
+                return f"The virtual device could not be started: {e}"
+        return await run(use)
+
+    @mcp.tool()
     async def ostinato_disconnect() -> str:
         """Release the device's MIDI ports, e.g. to use the device's own editor (for SLOOP its web editor). The last
-        read state stays available. Nothing reconnects by itself until ostinato_connect."""
+        read state stays available. Nothing reconnects by itself until ostinato_connect. While the virtual device
+        is used: close it (its patterns are kept) and look for a real device again."""
         return await run(manager_ref["m"].disconnect)
 
     @mcp.tool(annotations=ro)
@@ -303,7 +449,7 @@ def build_mcp(manager_ref: dict):
 
 # ---------------------------------------------------------------------- the commands
 
-def run(port: int, simulate: str | None = None, midi_port: str | None = None) -> int:
+def run(port: int, simulate: str | None = None, midi_port: str | None = None, virtual: bool = False) -> int:
     from .owner import OwnerLock
 
     lock = OwnerLock(name="device", label=f"port {port}")
@@ -323,7 +469,7 @@ def run(port: int, simulate: str | None = None, midi_port: str | None = None) ->
     url = f"http://127.0.0.1:{port}"
     ref: dict = {}
     mcp = build_mcp(ref)
-    manager = DeviceManager(mcp, port_hint=midi_port, simulate=simulate)
+    manager = DeviceManager(mcp, port_hint=midi_port, simulate=simulate, virtual=virtual)
     ref["m"] = manager
     holder: dict = {}
     started = time.time()
@@ -377,7 +523,8 @@ def run(port: int, simulate: str | None = None, midi_port: str | None = None) ->
     print(f"ostinato device server on {url}  (Ctrl+C or `ostinato-device stop` to stop)", flush=True)
     print(f"setup folder: {path.parent}", flush=True)
     print(f"browser UI: `ostinato-device ui` (or open {url}/ui/login?key=...)", flush=True)
-    print("looking for the device ..." if not simulate else f"simulated device ({simulate})", flush=True)
+    print(f"simulated device ({simulate})" if simulate else "virtual device (General MIDI)" if virtual else
+          "looking for the device ...", flush=True)
     try:
         server.run()
         if not server.started:
@@ -477,7 +624,8 @@ def status() -> int:
     since = time.strftime("%H:%M", time.localtime(s.get("since", 0)))
     backend = s.get("backend") or s.get("layer")  # (a device server of another version may say "layer")
     if s.get("connected"):
-        dev = f"device connected on {s.get('port')}: {s.get('firmware')} (backend {backend})"
+        dev = f"virtual device ({s.get('port')})" if s.get("virtual") else \
+            f"device connected on {s.get('port')}: {s.get('firmware')} (backend {backend})"
     elif backend:
         dev = f"device not connected ({s.get('sync')}; backend {backend})"
     else:
@@ -501,6 +649,8 @@ def main(argv: list[str] | None = None) -> None:
                     help="a substring of the device's MIDI port name (default: auto-detect)")
     ap.add_argument("--simulate", nargs="?", const="sloop", default=os.environ.get("OSTINATO_SIMULATE") or None,
                     metavar="BACKEND", help="a simulated device of that backend (default sloop)")
+    ap.add_argument("--virtual", action="store_true", default=env_flag("OSTINATO_VIRTUAL", False),
+                    help="start with the virtual device (no hardware; General MIDI sounds)")
     ap.add_argument("--if-mine", action="store_true",
                     help="stop: only a device server that is this program (e.g. the installed one)")
     args = ap.parse_args(argv)
@@ -512,7 +662,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(status())
     if args.command == "ui":
         sys.exit(open_ui())
-    sys.exit(run(args.port, args.simulate, args.midi_port))
+    sys.exit(run(args.port, args.simulate, args.midi_port, args.virtual))
 
 
 if __name__ == "__main__":

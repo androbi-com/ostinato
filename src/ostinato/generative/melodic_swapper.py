@@ -28,7 +28,7 @@ class MelodicSwapper(Generator):
     description = ("Swaps some notes of the line for new ones in the scale (own or borrowed from another track), "
                    "keeping the rhythm; may add chromatic approach notes before the root / third.")
     kinds = ("melodic", "chords")
-    order = 0
+    order = 2
 
     @classmethod
     def check(cls, cfg: dict, notes: list[str]) -> dict:

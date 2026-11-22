@@ -86,6 +86,8 @@ input[type="range"] { accent-color: var(--accent); width: 160px; vertical-align:
 /* ---- notice */
 .notice { background: var(--panel); border: 1px dashed var(--line); padding: 18px; border-radius: var(--radius);
   color: var(--muted); margin-bottom: 16px; }
+.notice p { margin: 0 0 10px; }
+.notice p:last-child { margin: 0; }
 
 /* ---- track cards */
 .track {
@@ -113,6 +115,9 @@ select.track-title.sound { max-width: 260px; font: inherit; font-weight: 600; }
 .tag { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--grid); color: var(--muted); }
 .tag.key { color: var(--ink); }
 .track-head .spacer { flex: 1; }
+.pattern { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 13px; }
+.pattern input[type="number"] { width: 4.2em; padding: 3px 6px; font-size: 13px; }
+.pattern select, select.signature { padding: 3px 6px; font-size: 13px; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .seg button { border: 0; background: transparent; padding: 4px 10px; cursor: pointer; color: var(--muted); }
 .seg button[aria-pressed="true"] { background: var(--grid); color: var(--ink); font-weight: 600; }

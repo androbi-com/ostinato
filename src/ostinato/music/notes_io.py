@@ -14,7 +14,7 @@ import math
 import re
 from fractions import Fraction
 
-from ..model import LEVELS, Event, Grid, Note, Sequence, WriteLimits
+from ..model import LEVELS, Event, Grid, Meter, Note, Sequence, WriteLimits
 from . import drums as D
 
 
@@ -130,9 +130,10 @@ def from_json(notes: list[dict], kind: str, unit: str = "steps", step: Fraction 
 
 
 def fit(seq: Sequence, limits: WriteLimits, current: str | None = None, div: str | None = None,
-        length_steps: int | None = None, round_to_beats: bool = True) -> tuple[Sequence, list[str]]:
+        length_steps: int | None = None, round_to: Fraction | None = Fraction(1)) -> tuple[Sequence, list[str]]:
     """Fit a Sequence to a writer's limits: choose the step grid (`div`, else the current one if it holds every
-    position exactly, else another that does, else the finest that fits, rounding), the pattern length in steps,
+    position exactly, else another that does, else the finest that fits, rounding), the pattern length in steps
+    (length_steps, else the sequence's, rounded up to whole `round_to` beats: a beat, a bar; None: as it is),
     notes per event; drop what the device cannot do. -> (fitted Sequence, notes about what changed)."""
     s = seq.copy()
     notes: list[str] = []
@@ -171,8 +172,10 @@ def fit(seq: Sequence, limits: WriteLimits, current: str | None = None, div: str
         if length_steps:
             steps = length_steps
         else:
-            exact_len = (s.length / q).denominator == 1 and s.length / q >= steps_needed
-            steps = int(s.length / q) if exact_len else (-(-steps_needed // 4) * 4 if round_to_beats else steps_needed)
+            beats = max(steps_needed * q, s.length)
+            if round_to:
+                beats = math.ceil(beats / round_to) * round_to
+            steps = math.ceil(beats / q)
         if limits.max_steps is not None and steps > limits.max_steps:
             if steps_needed > limits.max_steps:
                 raise NotesError(f"the notes need {steps_needed} steps of {name}; the device holds {limits.max_steps}")
@@ -216,18 +219,21 @@ def merge(base: Sequence, new: Sequence) -> Sequence:
 
 
 def midi_events(path: str, track: int | None = None, channel: int | None = None, drums: bool = False):
-    """A Standard MIDI File -> JSON note list in beats (for from_json(unit="beats")) + info. The file starts on the
-    bar of its first note. track (0-based) / channel (1-16): which notes (default all; drums: channel 10 if any)."""
+    """A Standard MIDI File -> JSON note list in beats (for from_json(unit="beats")) + info (with the file's first time
+    signature, "6/8", or None). The file starts on the bar of its first note. track (0-based) / channel (1-16): which notes (default all; drums: channel 10 if any)."""
     import mido
 
     mf = mido.MidiFile(path)
     tpb = mf.ticks_per_beat or 480
     found = []  # (start, end, note, velocity, channel, track)
+    sigs = []  # (time, signature)
     for ti, tr in enumerate(mf.tracks):
         t = 0
         on: dict[tuple[int, int], tuple[int, int]] = {}
         for msg in tr:
             t += msg.time
+            if msg.type == "time_signature":
+                sigs.append((t, Meter(msg.numerator, msg.denominator)))
             if msg.type == "note_on" and msg.velocity > 0:
                 on[(msg.channel, msg.note)] = (t, msg.velocity)
             elif msg.type in ("note_off", "note_on") and (msg.channel, msg.note) in on:
@@ -239,10 +245,13 @@ def midi_events(path: str, track: int | None = None, channel: int | None = None,
     sel = [n for n in found if (track is None or n[5] == track) and (channel is None or n[4] == channel)]
     if not sel:
         raise NotesError(f"no notes in {path} for track={track} channel={channel} (channels with notes: {chans})")
-    bar0 = Fraction(math.floor(min(n[0] for n in sel) / 4) * 4)
+    meter = min(sigs, key=lambda x: x[0])[1] if sigs else None
+    bar = meter.bar if meter is not None and meter.count else Fraction(4)
+    bar0 = math.floor(min(n[0] for n in sel) / bar) * bar
     out = []
     for s, e, n, v, ch, ti in sorted(sel):
         ev = {"start": str(s - bar0 + 1), "length": str(max(e - s, Fraction(1, 32))), "velocity": v}
         ev["lane" if drums else "note"] = n
         out.append(ev)
-    return out, {"tracks": len(mf.tracks), "channels": chans, "notes": len(sel), "from_beat": float(bar0) + 1}
+    return out, {"tracks": len(mf.tracks), "channels": chans, "notes": len(sel), "from_beat": float(bar0) + 1,
+                 "signature": str(meter) if meter is not None else None}

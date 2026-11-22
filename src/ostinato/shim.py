@@ -37,7 +37,7 @@ PLACEHOLDER = {
                    "has not run yet on this computer: its tools appear once it runs.)",
     "inputSchema": {"type": "object", "properties": {}},
 }
-BASE_INSTRUCTIONS = ("Works with a music device (a synthesizer, a groovebox...) through the ostinato device server (`ostinato-device`, started by "
+BASE_INSTRUCTIONS = ("Works with a music device (a synthesizer, a groovebox..., or a virtual one) through the ostinato device server (`ostinato-device`, started by "
                      "the user in a terminal). Start with ostinato_status.")
 
 

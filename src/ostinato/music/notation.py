@@ -6,7 +6,9 @@
   spelling from the part's Key (if there is one), the clef from the range used.
 - Drum parts: a percussion staff in two voices, hands (stems up) and feet (kick, pedal: stems down), GM voices at
   their usual positions (music.drums); a hit lasts until the voice's next hit or the next beat.
-- Several parts loop their own lengths up to the longest one (as they play), at most `max_bars` bars of 4/4.
+- Several parts loop their own lengths up to the longest one (as they play), at most `max_bars` bars. Each has its
+  own time signature (Sequence.meter) where the bars are equally long (3/4 with 6/8); else the score is in the one
+  most parts have (a score's bars are shared), and the caption says so.
 Optional: a part's name (e.g. the instrument), the key, the tempo. Without them the staff simply has none.
 
 music21 and verovio (C++) are not made for several threads at once, and verovio keeps its fonts per thread: all of
@@ -20,8 +22,9 @@ import threading
 from dataclasses import dataclass
 from fractions import Fraction
 
-from ..model import Key, Sequence
+from ..model import Key, Meter, Sequence
 from . import drums as D
+from . import meter as MT
 from . import scales as SC
 
 LOCK = threading.RLock()
@@ -125,22 +128,58 @@ def _melodic_part(p: Part, total: Fraction):
     return part
 
 
-def _finish(s, total: Fraction):
-    """Fill the gaps with rests up to total, cut into 4/4 measures, tie / beam as notation wants."""
+def _finish(s, total: Fraction, mt: Meter):
+    """Fill the gaps with rests up to total, cut into measures, tie / beam as notation wants."""
     from music21 import meter, note
 
-    s.insert(0, meter.TimeSignature("4/4"))
+    s.insert(0, meter.TimeSignature(str(mt)))
+    if mt.compound:
+        _split_notes_at_beats(s, mt)
     s.makeRests(fillGaps=True, inPlace=True, timeRangeFromBarDuration=False)
     end = Fraction(s.highestTime)
     if end < total:
         s.insert(_off(end), note.Rest(quarterLength=total - end))
     out = s.makeNotation()
-    _split_rests_at_beats(out)
+    _split_rests_at_beats(out, mt)
     _fix_accidentals(out)
     return out
 
 
-def _split_rests_at_beats(measured) -> None:
+def _split_notes_at_beats(s, mt: Meter) -> None:
+    """In 6/8 and the like: a note that lasts past its beat (a dotted quarter) is tied over it, unless it fills whole
+    beats."""
+    for el in list(s.notes):
+        off, ql = Fraction(el.offset), Fraction(el.quarterLength)
+        to_beat = (math.floor(off / mt.beat) + 1) * mt.beat - off
+        while ql > to_beat and not (to_beat == mt.beat and (ql / mt.beat).denominator == 1):
+            first, rest = el.splitAtQuarterLength(_off(to_beat), retainOrigin=True, addTies=True)
+            rest.articulations, rest.expressions = [], []
+            off, ql = off + to_beat, ql - to_beat
+            s.insert(_off(off), rest)
+            el, to_beat = rest, mt.beat
+
+
+def _rest_pieces(off: Fraction, ql: Fraction, mt: Meter) -> list[tuple[Fraction, Fraction]]:
+    """A rest at an offset in its measure -> the rests it is written as, (offset, length)."""
+    pieces = []
+    cur, left = off, ql
+    if off == 0 and ql == mt.bar and mt.bar in (Fraction(3, 2), 2, 3, 4):
+        return [(off, ql)]  # (an empty bar)
+    while left > 0:
+        on_beat = (cur / mt.beat).denominator == 1
+        if on_beat and left >= mt.beat:  # whole beats: together in 4/4 (and 2/4), else one by one
+            take = math.floor(left / mt.beat) * mt.beat if mt in (Meter(4, 4), Meter(2, 4)) else mt.beat
+        elif on_beat:
+            take = left
+        else:  # up to the next beat (6/8: of eighths)
+            unit = Fraction(4, mt.unit) if mt.compound else mt.beat
+            take = min(left, (math.floor(cur / unit) + 1) * unit - cur)
+        pieces.append((cur, take))
+        cur, left = cur + take, left - take
+    return pieces
+
+
+def _split_rests_at_beats(measured, mt: Meter) -> None:
     """music21 leaves rests across beats: split a rest at the next beat when it starts off the beat, and an on-beat
     rest into whole beats + the remainder."""
     from music21 import note
@@ -148,14 +187,7 @@ def _split_rests_at_beats(measured) -> None:
     for m in measured.getElementsByClass("Measure"):
         for c in list(m.voices) or [m]:
             for r in list(c.getElementsByClass(note.Rest)):
-                off, ql = Fraction(r.offset), Fraction(r.quarterLength)
-                pieces = []
-                cur, left = off, ql
-                while left > 0:
-                    take = (Fraction(math.floor(left)) if left >= 1 else left) if cur.denominator == 1 else \
-                        min(left, Fraction(math.floor(cur) + 1) - cur)
-                    pieces.append((cur, take))
-                    cur, left = cur + take, left - take
+                pieces = _rest_pieces(Fraction(r.offset), Fraction(r.quarterLength), mt)
                 if len(pieces) == 1:
                     continue
                 c.remove(r)
@@ -185,7 +217,7 @@ def _fix_accidentals(measured) -> None:
                 seen[k] = alter
 
 
-def _drum_voice(hits, feet: bool, total: Fraction, min_len: Fraction, stem: str):
+def _drum_voice(hits, feet: bool, total: Fraction, min_len: Fraction, stem: str, mt: Meter):
     """One drum voice: the hits whose voices are (not) feet, each until the voice's next hit or the next beat."""
     from music21 import articulations, expressions, note, percussion, stream
 
@@ -194,7 +226,7 @@ def _drum_voice(hits, feet: bool, total: Fraction, min_len: Fraction, stem: str)
     mine = [(off, ns) for off, ns in mine if ns]
     for k, (off, ns) in enumerate(mine):
         nxt = mine[k + 1][0] if k + 1 < len(mine) else total
-        end = min(nxt, Fraction(math.floor(off) + 1), total)
+        end = min(nxt, (math.floor(off / mt.beat) + 1) * mt.beat, total)
         ql = max(end - off, min(min_len, total - off))
         us = []
         for n in ns:
@@ -219,7 +251,7 @@ def _drum_voice(hits, feet: bool, total: Fraction, min_len: Fraction, stem: str)
     return v
 
 
-def _drum_part(p: Part, total: Fraction):
+def _drum_part(p: Part, total: Fraction, mt: Meter):
     """The percussion staff: hands (stems up) and feet (stems down) as two voices in each measure."""
     from music21 import clef, instrument, meter, stream
 
@@ -232,9 +264,9 @@ def _drum_part(p: Part, total: Fraction):
     voices = []
     for feet, stem in ((False, "up"), (True, "down")):
         if any((v in D.FEET) == feet for v in used):
-            voices.append(_finish(_drum_voice(hits, feet, total, min_len, stem), total))
+            voices.append(_finish(_drum_voice(hits, feet, total, min_len, stem, mt), total, mt))
     if not voices:
-        voices = [_finish(stream.Stream(), total)]
+        voices = [_finish(stream.Stream(), total, mt)]
     part = stream.Part()
     part.partName = p.title
     part.insert(0, instrument.Percussion())
@@ -243,7 +275,7 @@ def _drum_part(p: Part, total: Fraction):
         m = stream.Measure(number=mi + 1)
         if mi == 0:
             m.insert(0, clef.PercussionClef())
-            m.insert(0, meter.TimeSignature("4/4"))
+            m.insert(0, meter.TimeSignature(str(mt)))
         for vi, ms in enumerate(vmeasures):
             if mi < len(ms):
                 voice = stream.Voice(id=str(vi + 1))
@@ -254,21 +286,39 @@ def _drum_part(p: Part, total: Fraction):
     return part
 
 
+def _score_meters(parts: list[Part]) -> tuple[list[Meter], Meter | None]:
+    """The signature each part is written in, and the one they all got although theirs differ (None: their own).
+    Bars are shared by all parts of a score, so they must be equally long."""
+    own = [MT.of(p.seq) for p in parts]
+    if len({m.bar for m in own}) <= 1:
+        return own, None
+    best = max(own, key=lambda m: (sum(1 for x in own if x == m),
+                                   max(p.seq.length for p, x in zip(parts, own) if x == m)))
+    return [m if m.bar == best.bar else best for m in own], best
+
+
 def build_score(parts: list[Part], tempo: float | None = None, max_bars: int = 8):
     """-> (music21 Score, remarks for the caption); score.ostinato_bars = the number of bars."""
     with LOCK:
         from music21 import metadata, stream
 
         total = max((p.seq.length for p in parts), default=Fraction(4))
-        total = min(total, Fraction(4 * max_bars))
+        meters, common = _score_meters(parts)
+        bar = meters[0].bar if meters else Fraction(4)
+        total = min(total, bar * max_bars)
         total = Fraction(math.ceil(total * 4), 4) or Fraction(4)
         score = stream.Score()
         score.metadata = metadata.Metadata()
         score.metadata.title = ""
-        for p in parts:
-            part = _drum_part(p, total) if p.seq.kind == "drums" else _finish(_melodic_part(p, total), total)
+        for p, mt in zip(parts, meters):
+            part = _drum_part(p, total, mt) if p.seq.kind == "drums" else _finish(_melodic_part(p, total), total, mt)
             score.insert(0, part)
-        remarks = [f"Tempo {tempo:g} BPM, 4/4" if tempo else "4/4"]
+        sigs = ", ".join(dict.fromkeys(str(m) for m in meters)) or "4/4"
+        quarters = " (quarter notes)" if any(m.unit != 4 for m in meters) else ""
+        remarks = [f"Tempo {tempo:g} BPM{quarters}, {sigs}" if tempo else sigs]
+        if common is not None:
+            remarks[0] += f" (the score is in {common}; the tracks are " + ", ".join(
+                f"{p.title.split(' ')[0] if p.title.startswith('T') else p.title} {MT.of(p.seq)}" for p in parts) + ")"
         for p in parts:
             g = p.seq.grid
             r = f"{p.title}: {float(p.seq.length):g} beats" + (f" ({g.steps} steps of {g.name or g.step})" if g else "")
@@ -280,9 +330,9 @@ def build_score(parts: list[Part], tempo: float | None = None, max_bars: int = 8
                 if voices:
                     r += f". Staff positions: {D.legend(voices, p.drum_names)}"
             remarks.append(r)
-        if any(p.seq.length > 4 * max_bars for p in parts):
+        if any(p.seq.length > bar * max_bars for p in parts):
             remarks.append(f"(cut at {max_bars} bars)")
-        score.ostinato_bars = math.ceil(total / 4)
+        score.ostinato_bars = math.ceil(total / bar)
         return score, remarks
 
 

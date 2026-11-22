@@ -3,7 +3,7 @@ device can do it), plus the backend's own extra tools. Device-independent: they 
 session; nothing here knows a firmware.
 
     reader:                ostinato_show_track, ostinato_show_all_tracks, ostinato_show_staff, ostinato_export_musicxml,
-                           ostinato_track_data, ostinato_refresh, ostinato_changes
+                           ostinato_track_data, ostinato_refresh, ostinato_changes, ostinato_set_signature
     keys (+ reader):       ostinato_scales
     parameters:            ostinato_parameters
     mixer:                 ostinato_mute_track, ostinato_set_level
@@ -12,7 +12,7 @@ session; nothing here knows a firmware.
     tempo_control:         ostinato_set_tempo
     reader (states):       ostinato_save_state, ostinato_list_states, ostinato_load_state, ostinato_show_state,
                            ostinato_delete_state; + writer: ostinato_apply_state
-    writer (+ reader):     ostinato_write_notes, ostinato_write_midi, ostinato_clear_track, ostinato_undo,
+    writer (+ reader):     ostinato_write_notes, ostinato_write_midi, ostinato_set_length, ostinato_clear_track, ostinato_undo,
                            ostinato_generators, ostinato_generate
     + controls:            ostinato_generative_mode
 The device server's own tools (ostinato_status, ostinato_connect, ostinato_disconnect, ostinato_list_midi_ports) are in device_server.
@@ -29,6 +29,7 @@ import anyio
 from mcp.types import ToolAnnotations
 
 from .model import Sequence
+from .music import meter as MT
 from .music import notes_io as NIO
 from .music import scales as SC
 from .music import views as V
@@ -191,6 +192,8 @@ def register(mcp, session) -> list[str]:
                     "length_beats": float(seq.length),
                     "grid": {"steps": seq.grid.steps, "step_beats": float(seq.grid.step), "name": seq.grid.name}
                     if seq.grid else None,
+                    "signature": str(seq.meter) if seq.meter else None,
+                    "signature_setting": session.signature_setting(track),
                     "key": SC.key_name(key) if key else None, "events": evs}
 
         @tool(RO)
@@ -212,6 +215,33 @@ def register(mcp, session) -> list[str]:
             return {"version": session.version,
                     "events": [{"version": e.version, "at": time.strftime("%H:%M:%S", time.localtime(e.at)),
                                 "kind": e.kind, "track": e.track, "source": e.source, "text": e.text} for e in evs]}
+
+        @tool(FILE)
+        async def ostinato_set_signature(track: int | None = None, signature: str | None = None) -> str:
+            """A track's time signature: how its steps are counted in staffs, bar lines and the text views (the notes and
+            the playback do not change; the number of steps is ostinato_set_length's). Without signature: what
+            every track (or this one) has.
+            signature: "auto" (by the pattern's length in beats: threes are 3/4, fours 4/4) or 2/4, 3/4, 4/4, 5/4, 6/4,
+              7/4, 3/8, 6/8, 7/8, 9/8, 12/8. 6/8 must be set: it is as long as 3/4, so auto never chooses it.
+            Kept on this computer. With a fixed signature ostinato_write_notes rounds patterns up to whole bars."""
+            if (e := ready(track)):
+                return e
+
+            def line(t: int) -> str:
+                seq = session.read(t)
+                auto = " (auto)" if session.signature_setting(t) == "auto" else ""
+                steps = f", {seq.grid.steps} steps of {seq.grid.name}" if seq.grid else ""
+                bars = float(seq.length / seq.meter.bar)
+                return f"Track {t}: {seq.meter}{auto}{steps}, {bars:.4g} bar(s)"
+            if signature is None:
+                return "\n".join([await _run(line, t) for t in ([track] if track else [x.track for x in session.tracks()])])
+            if track is None:
+                return "Which track? (track is needed to set a signature)"
+            try:
+                before, _ = await _run(session.set_signature, track, signature)
+            except ValueError as ex:
+                return f"Not changed: {ex}"
+            return (await _run(line, track)) + f" (was {before})."
 
     # ------------------------------------------------------------------ keys
     if b.keys is not None and b.reader is not None:
@@ -512,7 +542,7 @@ def register(mcp, session) -> list[str]:
 
     # ------------------------------------------------------------------ writing
     if b.writer is not None and b.reader is not None:
-        def write_notes(track, notes_json, unit, div, mode, length, start_at, label, beats_only=False):
+        def write_notes(track, notes_json, unit, div, mode, length, start_at, label, beats_only=False, round_to=None):
             seq_now = session.read(track)
             limits = b.writer.limits(track)
             kind = "drums" if seq_now.kind == "drums" else "melodic"
@@ -524,7 +554,8 @@ def register(mcp, session) -> list[str]:
                                 max(0, start_at - 1), limits.drum_voices)
             if mode == "merge":
                 new.length = max(new.length, seq_now.length)
-            fitted, notes = NIO.fit(new, limits, cur_name, div, length, round_to_beats=mode == "replace")
+            fitted, notes = NIO.fit(new, limits, cur_name, div, length,
+                                    round_to=(round_to or session.round_unit(track)) if mode == "replace" else None)
             if mode == "merge":
                 fitted = NIO.merge(seq_now, fitted)
             rep = session.write(track, fitted, label)
@@ -546,9 +577,10 @@ def register(mcp, session) -> list[str]:
             unit: "steps" (start / length in steps of the track's grid; start 1 = the first step) or "beats" (quarter
               notes; start 1 = the first beat: the step length is then chosen to hold every position).
             div: the step length to use (as the device names it, e.g. 1/16, 1/8, 8T).
-            mode: "replace" (the pattern becomes exactly these notes, its length rounded up to whole beats) or
-              "merge" (notes over the existing pattern; overlapped notes give way).
-            length: the pattern's length in steps. start_at: shift everything to start at this step.
+            mode: "replace" (the pattern becomes exactly these notes, its length rounded up to whole beats, or to whole
+              bars of the track's time signature when one is set) or "merge" (notes over the existing pattern;
+              overlapped notes give way).
+            length: the pattern's length in steps: give it when the last bar ends with a rest. start_at: shift everything to start at this step.
             The device's limits apply (notes at once, steps per pattern...): what had to be adapted is reported."""
             if (e := ready(track)):
                 return e
@@ -563,26 +595,57 @@ def register(mcp, session) -> list[str]:
                                  length: int | None = None) -> str:
             """Write the notes of a Standard MIDI File (.mid) onto a track; ostinato_undo reverts. midi_track (0-based) /
             channel (1-16) choose which notes (default all; a drum track takes channel 10 if the file has it). The
-            file starts on the bar of its first note; the step length is chosen to hold the notes unless `div`."""
+            file starts on the bar of its first note; the step length is chosen to hold the notes unless `div`. The
+            file's time signature is taken over when the track's is auto."""
             if (e := ready(track)):
                 return e
             try:
                 drums = (await _run(session.read, track)).kind == "drums"
                 evs, info = await _run(NIO.midi_events, path, midi_track, channel, drums)
-                out = await _run(write_notes, track, evs, "beats", div, mode, length, 1, f"midi {Path(path).name}",
-                                 True)
+                sig, meter = info["signature"], None
+                if sig in MT.CHOICES and mode == "replace" and session.signature_setting(track) == MT.AUTO:
+                    meter = MT.parse(sig)
+
+                def write():
+                    out = write_notes(track, evs, "beats", div, mode, length, 1, f"midi {Path(path).name}", True,
+                                      meter.bar if meter else None)
+                    if meter and session.read(track).meter != meter:
+                        session.set_signature(track, sig)
+                    return out
+                out = await _run(write)
                 return (f"From {path}: {info['notes']} notes (channels {info['channels']}, from beat "
-                        f"{info['from_beat']:g}).\n" + out)
+                        f"{info['from_beat']:g}" + (f", {sig}" if sig else "") + ").\n" + out)
             except FileNotFoundError:
                 return f"No such file: {path}"
             except (NIO.NotesError, ValueError, OSError, EOFError) as ex:
                 return f"Nothing written: {ex}"
 
         @tool(WRITE)
+        async def ostinato_set_length(track: int, steps: int | None = None, div: str | None = None) -> str:
+            """The pattern's number of steps and / or step length (div, as the device names it: 1/16, 1/8, 8T);
+            ostinato_undo reverts. E.g. 12 or 24 steps of 1/16 for 3/4 or 6/8 (see ostinato_set_signature). The notes
+            stay on their steps: another div makes them faster or slower. Notes past the new end are removed.
+            Refused while generative mode is armed on the track (disarm it first)."""
+            if (e := ready(track)):
+                return e
+            if steps is None and div is None:
+                return "Give steps and / or div."
+            try:
+                rep, removed = await _run(session.set_length, track, steps, div)
+            except (ValueError, RuntimeError) as ex:
+                return f"Not changed: {ex}"
+            seq = await _run(session.read, track)
+            return (f"Track {track}: {V.pattern_line(seq)}."
+                    + (f" {removed} note(s) past the end removed." if removed else "")
+                    + (" Undo with ostinato_undo." if rep.changed or rep.length_changed or rep.grid_changed else
+                       " (as it was)") + "".join(f" Note: {n}." for n in rep.notes[:5]))
+
+        @tool(WRITE)
         async def ostinato_clear_track(track: int, keep_length: bool = True, note_only: str | None = None) -> str:
             """Clear a track: remove all its notes; ostinato_undo reverts.
 
-            keep_length: keep the pattern's length and step length (default); false: back to one bar of 1/16.
+            keep_length: keep the pattern's length and step length (default); false: back to one bar of 1/16 (of 4/4, or of
+              the time signature set).
             note_only: remove only this note, wherever it occurs (e.g. "A3", "F#2", "57"); in chords only that note
               goes. On a drum track it names the lane to empty: "HAT", "KICK", "SNARE", "OPEN HAT", "CLAP"... (or a
               GM note). With note_only the length is always kept.
