@@ -1,7 +1,9 @@
 """The browser UI's routes on a running device server (simulated FM-1): login, cookie, security checks, the API."""
 import http.client
 import json
+import re
 import time
+from urllib.parse import urljoin
 
 import pytest
 
@@ -63,6 +65,27 @@ def test_login_and_checks(ui):
     assert c.req("POST", "/api/ui/track/1/undo", {})[0] == 403  # (a write without X-Ostinato)
     st, _, _ = c.req("POST", "/api/ui/track/1/undo", {}, {"X-Ostinato": "1", "Origin": "http://evil.example"})
     assert st == 403
+
+
+def test_page_modules(ui):
+    """Every module the page loads is served, as JavaScript: the import map's, and what each file imports."""
+    c, _, _ = ui
+    _, _, page = c.req("GET", "/")
+    names = json.loads(re.search(r'<script type="importmap">(.*?)</script>', page.decode(), re.S).group(1))["imports"]
+    todo, seen = ["/ui/app.js", *names.values()], set()
+    while todo:
+        path = todo.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        st, hd, body = c.req("GET", path)
+        assert st == 200 and hd["content-type"].startswith("text/javascript"), path
+        for m in re.findall(r"""\bfrom\s*"([^"]+)";""", body.decode()):
+            todo.append(names[m] if m in names else urljoin(path, m))
+            assert m in names or m.startswith("./"), f"{path} imports {m}"
+    assert {"/ui/store.js", "/ui/tracks.js", "/ui/vendor/preact.mjs"} <= seen
+    assert c.req("GET", "/ui/vendor/README.md")[0] == 404 and c.req("GET", "/ui/vendor/../../tools.py")[0] == 404
+    assert Client(c.port).req("GET", "/ui/vendor/preact.mjs")[0] == 401
 
 
 def test_state_tracks_staff(ui):
@@ -174,6 +197,19 @@ def test_states_routes(ui):
     assert st == 400
     st, r = c.json("POST", "/api/ui/states/delete", {"name": "ui test"})
     assert st == 200
+
+
+def test_not_connected_looks_like_no_device(ui):
+    c, _, _ = ui
+    _, s = c.json("GET", "/api/ui/state")
+    assert len(s["tracks"]) == 4 and s["tempo"] == 90
+    assert c.json("POST", "/api/ui/disconnect", {})[0] == 200
+    _, s = c.json("GET", "/api/ui/state")
+    assert s["tracks"] == [] and s["tempo"] is None and s["playing"] is None and not s["status"]["connected"]
+    assert s["status"]["sync"] == "disconnected"  # (released: the page offers to reconnect)
+    assert c.json("POST", "/api/ui/connect", {})[0] == 200
+    _, s = c.json("GET", "/api/ui/state")
+    assert len(s["tracks"]) == 4 and s["status"]["connected"]
 
 
 def test_transport(ui):

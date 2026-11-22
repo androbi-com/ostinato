@@ -21,8 +21,10 @@ import anyio
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
 COOKIE = "ostinato_session"
-STATIC = {"app.js": "text/javascript; charset=utf-8", "style.css": "text/css; charset=utf-8",
-          "index.html": "text/html; charset=utf-8"}
+TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+         ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8"}
+# the page's files: path below /ui/ -> its type (only these are served)
+STATIC = {p.relative_to(UI_DIR).as_posix(): TYPES[p.suffix] for p in UI_DIR.rglob("*") if p.suffix in TYPES}
 SHIM_PATHS = ("/mcp", "/api/status", "/api/tools", "/api/shutdown")
 
 
@@ -172,7 +174,7 @@ def register(mcp, manager) -> None:
     async def page(request: Request):
         return Response((UI_DIR / "index.html").read_bytes(), media_type=STATIC["index.html"])
 
-    @mcp.custom_route("/ui/{name}", methods=["GET"])
+    @mcp.custom_route("/ui/{name:path}", methods=["GET"])
     async def static(request: Request):
         name = request.path_params["name"]
         if name not in STATIC:
@@ -193,8 +195,10 @@ def register(mcp, manager) -> None:
         s = m.session
         if s is not None:
             out["log_version"] = s.version
-            out["playing"] = s.playing()
-            if not s.not_ready():
+            # (not connected: as without a device; the last known state is Claude's to ask for)
+            if st.get("connected") and not s.not_ready():
+                out["playing"] = s.playing()
+
                 def collect():
                     from . import generative as G
 
