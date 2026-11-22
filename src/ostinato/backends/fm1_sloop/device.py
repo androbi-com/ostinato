@@ -19,7 +19,7 @@ import time
 from typing import Callable
 
 from . import protocol as P
-from .link import Link, LinkClosed, LinkError, LinkTimeout, MidoTransport, Transport, candidate_pairs
+from .link import Link, LinkClosed, LinkError, LinkLost, LinkTimeout, MidoTransport, Transport, candidate_pairs
 from .protocol import Cmd, req
 from .state import DeviceState
 
@@ -64,6 +64,7 @@ class SloopDevice:
         self.timeout = timeout
         self.link: Link | None = None
         self._sync = threading.RLock()
+        self._connecting = threading.Lock()  # one connect at a time (taken before _sync, never while holding it)
         self._pushq: queue.Queue = queue.Queue()
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
@@ -79,9 +80,22 @@ class SloopDevice:
 
     # ------------------------------------------------------------------ requests
     def rq(self, r, timeout: float | None = None, retries: int = 1) -> list[int]:
-        if not self.link or self.link.closed:
+        link = self.link
+        if not link or link.closed:
             raise NoDevice("not connected to an FM-1 (use the connect tool)")
-        return self.link.request(r, timeout=timeout, retries=retries)
+        try:
+            return link.request(r, timeout=timeout, retries=retries)
+        except LinkLost as e:
+            if self.link is link:
+                self._lost(str(e))
+            raise
+
+    def _lost(self, why: str) -> None:
+        """The device is gone (unplugged, or it stopped answering): the keeper looks for it from now on."""
+        log.warning("device lost (%s): reconnecting when it is back", why)
+        self._ping_fail = 0
+        self.disconnect(keep_wanted=True)
+        self.state.sync_status = f"lost: {why}"
 
     # ------------------------------------------------------------------ connection
     def connect(self, port_hint: str | None = None, read: bool = True, progress: Progress | None = None) -> P.Info:
@@ -89,6 +103,24 @@ class SloopDevice:
         if port_hint is not None:
             self.port_hint = port_hint
         self._want_connected = True
+        with self._connecting:
+            return self._connect(read, progress)
+
+    def _reconnect(self) -> None:
+        """The keeper's connect: not while another one runs, and not against a release meanwhile."""
+        if not self._connecting.acquire(blocking=False):
+            return
+        try:
+            if not self._want_connected or (self.link is not None and not self.link.closed):
+                return
+            self._connect(True, None)
+            log.info("reconnected")
+        finally:
+            self._connecting.release()
+            if not self._want_connected:  # (released meanwhile)
+                self.disconnect()
+
+    def _connect(self, read: bool, progress: Progress | None) -> P.Info:
         self.disconnect(keep_wanted=True)
         info = None
         if self.transport_factory:
@@ -118,7 +150,12 @@ class SloopDevice:
                 raise NoDevice("no FM-1 answered: " + "; ".join(errors))
         self._start_threads()
         if read:
-            self.read_all(progress)
+            try:
+                self.read_all(progress)
+            except LinkError as e:  # (not left "connected" with half of it read: the keeper tries again)
+                if self.link is not None:
+                    self._lost(f"reading failed: {e}")
+                raise
         return info
 
     def _try_transport(self, t: Transport) -> P.Info | None:
@@ -151,14 +188,15 @@ class SloopDevice:
                     link.request(req.watch(0), timeout=0.2, retries=0)
             except LinkError:
                 pass
-            link.close()
         with self.state.lock:
             was = self.state.connected
             self.state.connected = False
             self.state.watching = 0
-            self.state.sync_status = "disconnected"
+            self.state.sync_status = "looking for the device" if keep_wanted else "disconnected"
         if was:
             self.state.emit("disconnected", source="read")
+        if link:  # (last: how long closing an unplugged device's port takes is up to its driver)
+            link.close()
 
     def close(self) -> None:
         """The end: release the ports and stop the background threads."""
@@ -821,10 +859,10 @@ class SloopDevice:
                 if self._want_connected and time.monotonic() - last_reconnect > 3.0:
                     last_reconnect = time.monotonic()
                     try:
-                        self.connect(read=True)
-                        log.info("reconnected")
+                        self._reconnect()
                     except Exception as e:
-                        st.sync_status = f"waiting for device ({e})"
+                        if self._want_connected:
+                            st.sync_status = f"waiting for device ({e})"
                 continue
             if not st.watching or st.sync_status == "reading":
                 continue
@@ -835,14 +873,11 @@ class SloopDevice:
                     self.live()
                     self._ping_fail = 0
                 except LinkTimeout:
-                    self._ping_fail += 1
-                    if self._ping_fail >= 4:
-                        log.warning("device stopped answering: disconnecting")
-                        self._ping_fail = 0
-                        self.disconnect(keep_wanted=True)
-                        st.sync_status = "lost: reconnecting"
+                    self._no_answer()
                 except (LinkClosed, NoDevice):
                     pass
+                except Exception:  # never let the keeper die: nothing else notices a lost device
+                    log.exception("the LIVE poll failed")
                 continue
             gap = time.monotonic() - link.last_sent
             if gap < 1.0:
@@ -854,11 +889,13 @@ class SloopDevice:
                     self.rq(req.ping(), timeout=0.3, retries=0)
                 self._ping_fail = 0
             except LinkTimeout:
-                self._ping_fail += 1
-                if self._ping_fail >= 4:
-                    log.warning("device stopped answering: disconnecting")
-                    self._ping_fail = 0
-                    self.disconnect(keep_wanted=True)
-                    st.sync_status = "lost: reconnecting"
+                self._no_answer()
             except (LinkClosed, NoDevice):
                 pass
+            except Exception:
+                log.exception("the keep-alive failed")
+
+    def _no_answer(self) -> None:
+        self._ping_fail += 1
+        if self._ping_fail >= 4:
+            self._lost("it stopped answering")

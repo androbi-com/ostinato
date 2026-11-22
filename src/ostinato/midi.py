@@ -69,6 +69,17 @@ def candidate_pairs(hint: str | None, pattern: re.Pattern,
     return sorted(pairs, key=lambda p: rank(p[0]))
 
 
+def _never_free(port) -> None:
+    """A port that could not be closed (its device was unplugged): it must not be closed again, and freeing it would.
+    RtMidi (5.0, WinMM) has closed the handle by then, but its closePort returned with its lock held: a second close
+    waits for that lock for ever, inside a call that holds Python's global lock: the whole program stands still.
+    The extra reference keeps the object (a few KB) to the end, also while Python shuts down."""
+    import ctypes
+
+    port.closed = True  # (mido's own close() and __del__ do nothing then)
+    ctypes.pythonapi.Py_IncRef(ctypes.py_object(port))
+
+
 class MidoTransport:
     """A pair of real MIDI ports through mido + python-rtmidi (SysEx enabled)."""
 
@@ -83,7 +94,7 @@ class MidoTransport:
         try:
             self._in = mido.open_input(in_name, callback=self._on_msg)
         except Exception:
-            self._out.close()
+            self._close_port(self._out)
             raise
 
     def _on_msg(self, msg) -> None:
@@ -118,8 +129,13 @@ class MidoTransport:
         self._cb = None
         self._note_cb = None
         for p in (getattr(self, "_in", None), getattr(self, "_out", None)):
-            try:
-                if p is not None:
-                    p.close()
-            except Exception:
-                pass
+            if p is not None:
+                self._close_port(p)
+
+    @staticmethod
+    def _close_port(port) -> None:
+        try:
+            port.close()
+        except Exception as e:
+            log.info("closing the MIDI port failed (unplugged?): %s", e)
+            _never_free(port)

@@ -282,6 +282,9 @@ The editor protocol (SysEx `F0 7D 46 4C <cmd> ... F7`, every data byte 7 bit) is
   working project, a 3816-byte `project_t` on 2.8): `BK_LIST`, then `BK_GET` in pieces of 256 bytes, checked against
   the listed CRC-32; written back with `BK_PUT` begin / data / commit, loaded at once, only while stopped (rc 3).
   Needs protocol 6+ (SLOOP 2.3).
+- **Unplugged**: a send that fails (the MIDI port is gone) or four unanswered polls make the device lost, within
+  about a second (a failed send) or three; the last known state stays readable, and the keeper thread looks for the
+  device every 3 s. A dead port is closed once and never freed (RtMidi would freeze the program: `midi.py`).
 - **RAM**: every write goes to the device's RAM: save the project on the FM-1 (or a state in Ostinato) to keep it.
 - **Threads**: the device's push worker logs into the session while holding the device's lock, so the session's log
   has a lock of its own (never take the session's write lock inside a device callback).
