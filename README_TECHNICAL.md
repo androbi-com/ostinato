@@ -345,7 +345,9 @@ PyInstaller (`installer\ostinato.spec`) into `dist\Ostinato\`, checks that the b
 
 ### Releases (`.github/workflows/release.yml`)
 
-1. Raise `version` in `pyproject.toml` (and `uv lock`), commit and push.
+1. `uv run --no-project tools/bump_version.py patch` (or `minor`, `major`, a version; `--dry-run` only says what it
+   would do; without an argument it shows the version). It sets the version in `pyproject.toml`, `src/ostinato/__init__.py`
+   and `uv.lock`. Commit and push them.
 2. On GitHub, create a release with the tag `v<version>` and publish it.
 3. The workflow (on `windows-latest`, about 10 minutes) checks that the tag matches the version, runs the tests,
    builds with `tools\build_windows.ps1` (installing Inno Setup if the runner lacks it) and attaches
