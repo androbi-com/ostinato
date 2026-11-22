@@ -206,6 +206,18 @@ def test_pan(sloop):
     assert b.mixer.set_pan(2, 99).value == 63
 
 
+def test_full_read_is_logged(sloop):
+    """A (re)connection is logged before everything is read: the end of the read must be logged too (the UI loads
+    the notes when the log moves on)."""
+    from ostinato.session import Session
+
+    b, sim = sloop
+    s = Session(b)
+    b.connection.connect()
+    assert [e.text for e in s.log_entries if e.kind == "connection"][-2:] == ["connected", "everything read"]
+    assert s.not_ready() is None
+
+
 # ---------------------------------------------------------------- tempo
 
 def test_set_tempo(sloop):

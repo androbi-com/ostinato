@@ -57,23 +57,37 @@ Filename: "{app}\ostinato-cli.exe"; Parameters: "claude-config add --exe ""{app}
 Filename: "{app}\Ostinato.exe"; Description: "Start Ostinato now"; Flags: postinstall nowait skipifsilent
 
 [UninstallRun]
-Filename: "{app}\ostinato-cli.exe"; Parameters: "stop --if-mine"; Flags: runhidden; RunOnceId: "StopServer"
-Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM Ostinato.exe"; Flags: runhidden; RunOnceId: "StopTray"
 Filename: "{app}\ostinato-cli.exe"; Parameters: "claude-config remove --exe ""{app}\ostinato-cli.exe"""; \
   Flags: runhidden; RunOnceId: "ClaudeConfig"
 
 [Messages]
-FinishedLabel=Ostinato is installed.%n%nPlug in your FM-1 (with SLOOP) by USB and start Ostinato from the Start menu: it waits in the tray, next to the clock, and opens its page in your browser.%n%nIf you connected it to Claude Desktop, restart Claude Desktop to see Ostinato's tools.
+FinishedLabel=Ostinato is installed.%n%nPlug in your FM-1 (with SLOOP) by USB and start Ostinato from the Start menu: it waits in the tray, next to the clock, and opens its page in your browser.%n%nIf you connected it to Claude Desktop, restart Claude Desktop to see Ostinato's tools (after an update too: they stay disconnected until then).
 
 [Code]
-// An update while Ostinato runs: stop the device server and the tray first (their files are in use).
-function PrepareToInstall(var NeedsRestart: Boolean): String;
+// Stop everything that runs from the install folder (the files are in use): the device server (which lets go of the
+// device), the tray, then any other ostinato-cli.exe: the MCP shims, which Claude starts and keeps running (one each
+// for the Chat tab and Code sessions). Those only by their path: another copy of Ostinato is left alone.
+procedure StopPrograms;
 var
+  Cli, Quoted: String;
   Code: Integer;
 begin
-  if FileExists(ExpandConstant('{app}\ostinato-cli.exe')) then
-    Exec(ExpandConstant('{app}\ostinato-cli.exe'), 'stop --if-mine', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Cli := ExpandConstant('{app}\ostinato-cli.exe');
+  if FileExists(Cli) then
+    Exec(Cli, 'stop --if-mine', '', SW_HIDE, ewWaitUntilTerminated, Code);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM Ostinato.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Quoted := Cli;
+  StringChangeEx(Quoted, '''', '''''', True);  // (an apostrophe in the user's name)
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+       '-NoProfile -NonInteractive -Command "Get-Process ostinato-cli -ErrorAction SilentlyContinue | ' +
+       'Where-Object { $_.Path -eq ''' + Quoted + ''' } | Stop-Process -Force -PassThru | Wait-Process -Timeout 10"',
+       '', SW_HIDE, ewWaitUntilTerminated, Code);
+end;
+
+// An update while Ostinato runs.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  StopPrograms;
   Result := '';
 end;
 
@@ -82,6 +96,8 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Data: String;
 begin
+  if CurUninstallStep = usUninstall then  // (before [UninstallRun] and the files)
+    StopPrograms;
   if CurUninstallStep = usPostUninstall then
   begin
     Data := ExpandConstant('{userappdata}\ostinato');

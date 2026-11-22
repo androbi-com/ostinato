@@ -459,6 +459,8 @@ class _Changes(_Parts):
                 fn(DeviceEvent("reload", tr, "a sound or project was loaded", d))
             elif ev.kind in ("connected", "disconnected"):
                 fn(DeviceEvent("connection", None, ev.kind, d))
+            elif ev.kind == "full_read":  # (the notes may be others than before: the UI loads them again)
+                fn(DeviceEvent("connection", None, "everything read", d))
             elif ev.kind == "transport":
                 fn(DeviceEvent("transport", None, d.get("text", ""), d))
         self.st.subscribe(relay)

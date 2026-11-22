@@ -338,8 +338,9 @@ PyInstaller (`installer\ostinato.spec`) into `dist\Ostinato\`, checks that the b
   Desktop" runs `claude-config add`: it adds `{"command": "...\\ostinato-cli.exe", "args": ["mcp"]}` as
   `mcpServers.ostinato`, keeps everything else, saves the previous file as `.bak`, refuses a file that is not valid
   JSON, and also handles the Microsoft Store build's config folder. An update first stops the running device
-  server and tray. Uninstalling stops them, removes the Claude entry only if it points at the installed program,
-  and asks before deleting the setup folder (saved states, settings).
+  server, the tray and the MCP shims that Claude runs from the install folder (Claude's Ostinato tools then stay
+  disconnected until Claude Desktop is restarted). Uninstalling stops them too, removes the Claude entry only if it
+  points at the installed program, and asks before deleting the setup folder (saved states, settings).
 - **Not signed**: SmartScreen warns on first run ("More info", "Run anyway") until a code-signing certificate is
   used (`signtool` on both `.exe` files and the installer).
 

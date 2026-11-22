@@ -80,9 +80,10 @@ async function poll(force = false) {
   renderHeader(st);
   const key = JSON.stringify(st.tracks.map(t => [t.track, t.kind, t.instrument, t.key]));
   const changed = st.log_version !== S.logVersion;
-  if (key !== S.tracksKey) { S.tracksKey = key; buildTracks(st); }
+  const rebuilt = key !== S.tracksKey;  // (new cards are empty: their notes are needed even if nothing was logged)
+  if (rebuilt) { S.tracksKey = key; buildTracks(st); }
   else updateTrackChrome(st);
-  if (changed || force) {
+  if (changed || rebuilt || force) {
     S.logVersion = st.log_version;
     await Promise.all(st.tracks.map(t => loadTrack(t.track)));
     loadLog();
