@@ -6,4 +6,4 @@ ostinato-device (device_server.py) is the one process that talks to the device: 
 ostinato.tools) work through the backend's capabilities. ostinato-mcp (shim.py) is what Claude starts: a device-independent
 stdio shim that forwards to the device server.
 """
-__version__ = "0.3.3"
+__version__ = "0.4.0"
