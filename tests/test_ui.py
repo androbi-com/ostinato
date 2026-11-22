@@ -199,6 +199,19 @@ def test_states_routes(ui):
     assert st == 200
 
 
+def test_not_connected_looks_like_no_device(ui):
+    c, _, _ = ui
+    _, s = c.json("GET", "/api/ui/state")
+    assert len(s["tracks"]) == 4 and s["tempo"] == 90
+    assert c.json("POST", "/api/ui/disconnect", {})[0] == 200
+    _, s = c.json("GET", "/api/ui/state")
+    assert s["tracks"] == [] and s["tempo"] is None and s["playing"] is None and not s["status"]["connected"]
+    assert s["status"]["sync"] == "disconnected"  # (released: the page offers to reconnect)
+    assert c.json("POST", "/api/ui/connect", {})[0] == 200
+    _, s = c.json("GET", "/api/ui/state")
+    assert len(s["tracks"]) == 4 and s["status"]["connected"]
+
+
 def test_transport(ui):
     c, _, _ = ui
     _, s = c.json("GET", "/api/ui/state")

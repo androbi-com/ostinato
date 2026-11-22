@@ -195,8 +195,10 @@ def register(mcp, manager) -> None:
         s = m.session
         if s is not None:
             out["log_version"] = s.version
-            out["playing"] = s.playing()
-            if not s.not_ready():
+            # (not connected: as without a device; the last known state is Claude's to ask for)
+            if st.get("connected") and not s.not_ready():
+                out["playing"] = s.playing()
+
                 def collect():
                     from . import generative as G
 

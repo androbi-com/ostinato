@@ -3,13 +3,16 @@ import { api, toast } from "./api.js";
 import { $, h } from "./dom.js";
 import { act } from "./store.js";
 
+// fetch the saved states and build the whole tab
 export async function loadStates() {
   const box = $("#states");
   let r;
   try { r = await api("/api/ui/states"); } catch (e) { box.replaceChildren(h("div", { class: "notice", text: e.message })); return; }
+  // the form to save the device now
   const name = h("input", { type: "text", placeholder: "name, e.g. before gig", "aria-label": "State name" });
   const note = h("input", { type: "text", placeholder: "note (optional)", "aria-label": "Note", class: "wide" });
   const exact = h("input", { type: "checkbox", checked: true });
+  // save under this name (asks before replacing one)
   const save = async () => {
     const n = name.value.trim();
     if (!n) { toast("Give the state a name", true); return; }
@@ -23,6 +26,7 @@ export async function loadStates() {
       h("label", { class: "check", title: "Also keep the device's own copy of its project (put back byte for byte)" },
         exact, " exact copy"),
       h("button", { class: "primary", onclick: save }, "Save")));
+  // a saved state as a table row, with Load and Delete
   const row = x => h("tr", {},
     h("td", {}, h("strong", { text: x.name }), x.exact ? h("span", { class: "tag", text: "exact" }) : null),
     h("td", { text: x.saved_at || "" }),
@@ -34,6 +38,7 @@ export async function loadStates() {
       h("button", { class: "small ghost", onclick: async () => {
         if (confirm(`Delete the saved state "${x.name}"? This removes its file.`) &&
             await act("/api/ui/states/delete", { name: x.name }, "Delete")) loadStates(); } }, "Delete")));
+  // the table, or a note that there are none
   const list = r.states.length
     ? h("table", { class: "states-list" },
         h("thead", {}, h("tr", {}, ...["Name", "Saved", "Tracks", "Note", ""].map(x => h("th", { text: x })))),
@@ -42,12 +47,16 @@ export async function loadStates() {
   box.replaceChildren(saveCard, h("h3", { text: "Saved states" }), list, loadedCard(r.loaded));
 }
 
+// the state that was loaded: what it holds, how it differs from the device, applying it
 function loadedCard(L) {
   if (!L) return h("div");
+  // what to apply: tracks and parts
   const trackBoxes = L.tracks.map(t => h("input", { type: "checkbox", checked: true, value: t }));
   const partBoxes = L.parts.map(p => h("input", { type: "checkbox", checked: true, value: p }));
   const exact = h("input", { type: "checkbox", disabled: !L.exact });
+  // the exact copy is all or nothing: no choice of tracks and parts
   exact.onchange = () => [...trackBoxes, ...partBoxes].forEach(b => (b.disabled = exact.checked));
+  // check the choice, ask, apply
   const apply = async () => {
     const tracks = trackBoxes.filter(b => b.checked).map(b => +b.value);
     const parts = partBoxes.filter(b => b.checked).map(b => b.value);

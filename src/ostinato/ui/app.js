@@ -14,12 +14,15 @@ import { loadStates } from "./states.js";
 import { poll, state } from "./store.js";
 import { Tracks } from "./tracks.js";
 
+// the Preact parts of the page
 render(html`<${Header} />`, $("#header"));
 render(html`<${Tracks} />`, $("#tab-tracks"));
 
+// the activity log follows the server's log
 const logVersion = computed(() => (state.value ? state.value.log_version : 0));
 effect(() => { if (logVersion.value) loadLog(); });
 
+// the tabs; settings load once, saved states every time
 let setupsShown = false;
 document.querySelectorAll(".tabs button").forEach(b => b.addEventListener("click", () => {
   document.querySelectorAll(".tabs button").forEach(x => x.setAttribute("aria-selected", x === b));
@@ -28,5 +31,6 @@ document.querySelectorAll(".tabs button").forEach(b => b.addEventListener("click
   if (b.dataset.tab === "states") loadStates();
 }));
 
+// start, then keep asking
 poll(true);
 setInterval(poll, 900);

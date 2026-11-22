@@ -1,19 +1,24 @@
 // The piano roll / drum grid of a track, drawn as SVG.
 import { s } from "./dom.js";
 
+// note names, the black keys among them, and how opaque a note is by its level
 const NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const BLACK = [1, 3, 6, 8, 10];
 const LEVEL_OPACITY = { ghost: 0.38, soft: 0.65, normal: 0.88, hard: 1 };
 
+// a track's reply (d) -> an <svg> that fits the width
 export function drawRoll(d, width) {
   const drums = d.kind === "drums";
+  // the grid: how long a step is, how many there are, how many make a beat
   const stepBeats = d.grid ? d.grid.step : 0.25;
   const steps = d.grid ? d.grid.steps : Math.max(1, Math.round(d.length / stepBeats));
   const perBeat = Math.abs(1 / stepBeats - Math.round(1 / stepBeats)) < 1e-6 ? Math.round(1 / stepBeats) : 4;
   const labelW = drums ? 96 : 48;
   // the steps fill the card (at least 12 px each: a long pattern scrolls sideways)
   const cellW = Math.max(12, Math.floor(((width || 1000) - labelW - 4) / steps));
+  // the pitches that occur, with their names
   const named = Object.fromEntries(d.voices.map(v => [v.pitch, v.name]));
+  // the rows, top to bottom: drum sounds, or every pitch around the notes (an octave at least)
   let rows;
   if (drums) rows = d.voices.map(v => v.pitch).sort((a, b) => a - b);
   else {
@@ -24,10 +29,12 @@ export function drawRoll(d, width) {
     for (let p = hi; p >= lo; p--) rows.push(p);
   }
   const rowH = drums ? 20 : 13;
+  // the picture itself
   const W = labelW + steps * cellW + 2, H = rows.length * rowH + 18;
   const svg = s("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img",
     "aria-label": `Track ${d.track}: ${d.events.length} notes` });
   const rowOf = Object.fromEntries(rows.map((p, i) => [p, i]));
+  // the theme's colours (SVG attributes cannot use CSS variables)
   const css = getComputedStyle(document.documentElement);
   const col = n => css.getPropertyValue(n).trim();
   // rows and labels
@@ -54,6 +61,7 @@ export function drawRoll(d, width) {
   for (const e of d.events) {
     const st = e.step != null ? e.step : e.start / stepBeats;
     const len = drums ? 1 : Math.max(1, e.steps != null ? e.steps : e.length / stepBeats);
+    // a rectangle per note; accents outlined, muted ones dashed
     for (const n of e.notes) {
       if (!(n.pitch in rowOf)) continue;
       const x = labelW + st * cellW + 1.5, y = 18 + rowOf[n.pitch] * rowH + 1.5;
@@ -64,11 +72,14 @@ export function drawRoll(d, width) {
         stroke: e.accent ? col("--accent") : e.muted ? fillCol : "none",
         "stroke-width": e.accent ? 2 : 1, "stroke-dasharray": e.muted ? "3 2" : null });
       g.append(r);
+      // ratchets: lines that split the note
       for (let k = 1; k < (n.ratchet || 1); k++)
         g.append(s("line", { x1: x + (w * k) / n.ratchet, x2: x + (w * k) / n.ratchet, y1: y + 2, y2: y + hh - 2,
           stroke: col("--panel"), "stroke-width": 1.5 }));
+      // slides: a stroke at the note's end
       if (e.slide) g.append(s("path", { d: `M${x + w - 6},${y + hh} L${x + w},${y + 1}`, stroke: col("--accent"),
         "stroke-width": 1.6, fill: "none" }));
+      // the tooltip: everything known about the note
       const bits = [n.name, `step ${st + 1}`, !drums && len !== 1 ? `${len} steps` : null, n.level !== "normal" ? n.level : null,
         n.ratchet > 1 ? `×${n.ratchet}` : null, e.accent ? "accent" : null, e.slide ? "slide" : null, e.muted ? "muted" : null,
         n.velocity ? `vel ${n.velocity}` : null,

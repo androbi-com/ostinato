@@ -5,29 +5,34 @@ import { api } from "./api.js";
 import { html } from "./html.js";
 import { drawRoll } from "./roll.js";
 import {
-  act, algoChoice, can, collapsed, controlChoice, notesVersion, setKey, state, toggleTrack, trackData, views,
+  act, algoChoice, can, collapsed, controlChoice, notesVersion, released, setKey, state, toggleTrack, trackData, views,
 } from "./store.js";
 
+// the cards, or why there are none
 export function Tracks() {
   const st = state.value;
   if (!st) return null;
   if (!st.tracks.length) {
-    return html`<div class="notice">${st.backend
-      ? "The device is not connected or still being read. Reconnect takes it back (e.g. after its own editor)."
+    return html`<div class="notice">${
+      st.status.connected ? "The device is still being read."
+      : released(st) ? "The device is released. Reconnect takes it back (e.g. after its own editor)."
       : "No device detected yet. Plug it in by USB; the device server looks for it every few seconds."}</div>`;
   }
   return st.tracks.map(t => html`<${TrackCard} key=${t.track} t=${t} st=${st} />`);
 }
 
+// one track: its head (sound, tags, view buttons) and its body (actions, notes)
 function TrackCard({ t, st }) {
   const folded = !!collapsed.value[t.track];
   const view = views.value[t.track] || "roll";
   const data = trackData.value[t.track];
   const grid = !data || data.error ? "" : data.grid ? `${data.grid.steps} × ${data.grid.name}` : `${data.length} beats`;
+  // the Steps / Staff buttons
   const viewButton = (name, label) => html`
     <button aria-pressed=${view === name} onClick=${() => setKey(views, t.track, name)}>${label}</button>`;
   return html`
     <article class="track ${t.kind} ${folded ? "collapsed" : ""}" id=${`track-${t.track}`}>
+      <!-- the head: fold, number, sound, tags, view -->
       <div class="track-head">
         <button class="fold" aria-expanded=${!folded} aria-controls=${`track-body-${t.track}`}
           title=${folded ? "Show this track" : "Hide this track"} onClick=${() => toggleTrack(t.track)}>
@@ -42,6 +47,7 @@ function TrackCard({ t, st }) {
         <span class="spacer"></span>
         <div class="seg" role="group">${viewButton("roll", "Steps")}${viewButton("staff", "Staff")}</div>
       </div>
+      <!-- the body: buttons, then the notes -->
       <div class="track-body" id=${`track-body-${t.track}`}>
         <div class="track-actions"><${TrackActions} t=${t} st=${st} /></div>
         ${!folded && (view === "staff" ? html`<${Staff} track=${t.track} />` : html`<${Roll} data=${data} />`)}
@@ -54,6 +60,7 @@ function TrackCard({ t, st }) {
 function usePending(value, send) {
   const pending = useSignal(undefined);
   const show = v => (pending.value = v);
+  // show it now, send it, then follow the device again
   const commit = async v => {
     pending.value = v;
     await send(v);
@@ -63,6 +70,7 @@ function usePending(value, send) {
 }
 
 // ---------------------------------------------------------------- the notes
+// the piano roll, drawn again only when the notes or the width change
 function Roll({ data }) {
   const box = useRef(null);
   const [width, setWidth] = useState(0);
@@ -73,11 +81,13 @@ function Roll({ data }) {
     measure();
     return () => ob.disconnect();
   }, []);
+  // draw it, or clear it when there is nothing to draw
   const drawn = !!(data && !data.error && data.events.length);
   useLayoutEffect(() => {
     if (!drawn) box.current.replaceChildren();
     else if (width) box.current.replaceChildren(drawRoll(data, width - 32));  // (the padding)
   }, [data, width, drawn]);
+  // what to say instead of a roll
   const text = !data ? "" : data.error ? data.error : drawn ? "" : "No notes in the pattern.";
   return html`<div class="roll" ref=${box}></div>${text && html`<div class="empty">${text}</div>`}`;
 }
@@ -104,6 +114,7 @@ function Staff({ track }) {
 const sounds = signal({});
 const asked = {};
 
+// the sounds for this kind of track ([] until they are there; asked for once)
 function loadSounds(t) {
   const kind = t.kind === "drums" ? "drums" : "synth";
   asked[kind] ||= api(`/api/ui/track/${t.track}/sounds`)
@@ -111,12 +122,14 @@ function loadSounds(t) {
   return sounds.value[kind] || [];
 }
 
+// the sound menu, grouped, with the track's sound chosen
 function SoundSelect({ t }) {
   const [shown, , commit] = usePending(null, v => {
     const [group, name] = JSON.parse(v);
     return act(`/api/ui/track/${t.track}/sound`, { name, group }, "Sound");
   });
   const cur = t.instrument || "";
+  // sort the sounds into their groups, and find the one the track has
   const groups = {};
   let found = "";
   for (const x of loadSounds(t)) {
@@ -134,11 +147,13 @@ function SoundSelect({ t }) {
 }
 
 // ---------------------------------------------------------------- the mixer
+// a level as text: dB where the device has a dB scale, else the number
 function levelText(m, v) {
   if (m.db_zero == null || !m.db_step) return String(v);
   return v <= m.min ? "OFF" : `${((v - m.db_zero) * m.db_step).toFixed(1)}dB`;
 }
 
+// a pan as text: C, L30, R50
 function panText(m, v) {
   const pct = Math.round((v * 100) / Math.max(Math.abs(m.min), Math.abs(m.max)));
   return pct === 0 ? "C" : pct < 0 ? `L${-pct}` : `R${pct}`;
@@ -161,14 +176,18 @@ function MixSlider({ t, what, label, text }) {
 }
 
 // ---------------------------------------------------------------- the actions
+// melodic_swapper -> melodic swapper
 const spaced = name => name.replace(/_/g, " ");
 
+// the row of buttons: mix, vary, undo, clear, generative mode (as the device can)
 function TrackActions({ t, st }) {
   const armed = st.armed.find(a => a.track === t.track);
   const post = (what, body, label) => act(`/api/ui/track/${t.track}/${what}`, body, label);
+  // the algorithms for this kind of track, and the one chosen
   const algos = st.algorithms.filter(a => a.kinds.includes(t.kind));
   const algo = (algos.find(a => a.name === algoChoice.value[t.track]) || algos[0] || {}).name;
   return html`
+    <!-- mute, level, pan -->
     ${can("mixer") && html`
       <button class=${t.muted ? "primary" : "ghost"} aria-pressed=${!!t.muted}
         title=${t.muted ? "Unmute this track" : "Mute this track"}
@@ -183,11 +202,13 @@ function TrackActions({ t, st }) {
           onClick=${() => post("undo", {}, "Undo")}>${t.undo ? `Undo (${t.undo})` : "Undo"}</button>
         <button class="ghost" disabled=${!!armed} title="Remove all notes of this track (Undo brings them back)"
           onClick=${() => confirm(`Clear all notes of track ${t.track}?`) && post("clear", {}, "Clear")}>Clear</button>
+        <!-- generative mode -->
         ${can("controls") && algo && html`<span class="sep"></span>
           ${armed ? html`<${Armed} armed=${armed} post=${post} />`
                   : html`<${Arm} t=${t} st=${st} algo=${algo} post=${post} />`}`}`}`;
 }
 
+// choose an algorithm and run it once
 function Vary({ t, algos, algo, armed, post }) {
   const initialize = algo === "random_initializer";
   return html`
@@ -205,6 +226,7 @@ function Vary({ t, algos, algo, armed, post }) {
 // generative mode: not armed
 function Arm({ t, st, algo, post }) {
   const ctrls = st.controls;
+  // the control chosen here, else the first knob
   const preferred = ctrls.find(c => c.name === controlChoice.value[t.track]) || ctrls.find(c => c.kind === "encoder") || ctrls[0];
   const control = (preferred || {}).name;
   return html`
@@ -219,6 +241,7 @@ function Arm({ t, st, algo, post }) {
 
 // generative mode: armed
 function Armed({ armed, post }) {
+  // how to use the control, and what the last run changed
   const how = armed.kind === "encoder" ? "turn it clockwise to vary, back to undo" : "each press runs once";
   const last = armed.last && armed.last.length ? ` · last: ${armed.last.join("; ")}` : "";
   return html`

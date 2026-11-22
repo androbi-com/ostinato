@@ -14,15 +14,21 @@ export const algoChoice = signal({});
 export const controlChoice = signal({});
 export const collapsed = signal(readCollapsed());  // (remembered in this browser)
 
+// does the device have this capability ("mixer", "writer"...)?
 export function can(cap) { return !!state.value && state.value.capabilities.includes(cap); }
+
+// was the device given away on purpose (Release)? Else it is being looked for.
+export function released(st) { return !!st.backend && st.status.sync === "disconnected"; }
 
 // a signal holding an object: change one key
 export function setKey(sig, key, value) { sig.value = { ...sig.value, [key]: value }; }
 
+// the folded tracks, as this browser remembers them
 function readCollapsed() {
   try { return JSON.parse(localStorage.getItem("ostinato.collapsed") || "{}") || {}; } catch (e) { return {}; }
 }
 
+// fold / unfold a track, and remember it
 export function toggleTrack(track) {
   const next = { ...collapsed.value };
   if (next[track]) delete next[track]; else next[track] = true;
@@ -34,6 +40,7 @@ export function toggleTrack(track) {
 let asked = 0, shown = 0;  // (replies can arrive out of order: an older one than the one shown is dropped)
 let loadedFor = "";        // what the notes were last loaded for
 
+// ask the server for its state; load the notes when something happened (or force)
 export async function poll(force = false) {
   const n = ++asked;
   let st;
@@ -43,10 +50,12 @@ export async function poll(force = false) {
     if (n > shown) { shown = n; serverError.value = e.message; }
     return;
   }
+  // an older reply than the one on the page: drop it
   if (n < shown) return;
   shown = n;
   serverError.value = "";
   state.value = st;
+  // the notes are loaded again when the log moved on or the tracks are others
   const key = JSON.stringify([st.log_version, st.tracks.map(t => [t.track, t.kind, t.instrument, t.key])]);
   if (key !== loadedFor || force) {
     loadedFor = key;
@@ -55,6 +64,7 @@ export async function poll(force = false) {
 }
 
 let loads = 0;
+// load every track's notes at once
 async function loadNotes(st) {
   const n = ++loads;
   const replies = await Promise.all(st.tracks.map(t =>
