@@ -29,6 +29,10 @@ class LinkClosed(LinkError):
     pass
 
 
+class LinkLost(LinkClosed):
+    """The MIDI port itself failed (the device was unplugged)."""
+
+
 # ------------------------------------------------------------------ the link
 
 class _Pending:
@@ -63,7 +67,7 @@ class Link:
         return self._closed
 
     def request(self, r: tuple[int, list[int]], timeout: float | None = None, retries: int = 1) -> list[int]:
-        """Send (cmd, args), wait for the matching reply's args. Raises LinkTimeout / LinkClosed."""
+        """Send (cmd, args), wait for the matching reply's args. Raises LinkTimeout / LinkClosed / LinkLost."""
         cmd, args = int(r[0]), list(r[1])
         data = frame(cmd, args)
         to = timeout or self.timeout
@@ -78,7 +82,11 @@ class Link:
                     if attempt:
                         self.stats["retries"] += 1
                     self.last_sent = time.monotonic()
-                    self.t.send(data)
+                    try:
+                        self.t.send(data)
+                    except Exception as e:  # (whatever the MIDI driver raises, e.g. rtmidi's own errors)
+                        self._closed = True
+                        raise LinkLost(f"the MIDI port failed: {e}") from e
                     if p.event.wait(to):
                         if p.reply is None:
                             raise LinkClosed("closed")
