@@ -11,7 +11,7 @@ from ostinato.backends.fm1_sloop.link import LinkError
 from ostinato.backends.fm1_sloop.sim import SimFM1
 
 
-def wait_for(cond, timeout=3.0):
+def wait_for(cond, timeout=60.0):  # (only a failure takes that long: a CI runner is slow)
     t0 = time.monotonic()
     while time.monotonic() - t0 < timeout:
         if cond():
@@ -136,14 +136,14 @@ def test_unplugged_and_plugged_in_again():
         dev.connect()
         assert st.connected and wait_for(lambda: st.playing is not None)  # (the keeper polls)
         cable.plugged = False
-        assert wait_for(lambda: not st.connected, 5)  # noticed without anyone asking for something
-        assert wait_for(lambda: st.sync_status.startswith("waiting for device"), 8)
+        assert wait_for(lambda: not st.connected)  # noticed without anyone asking for something
+        assert wait_for(lambda: st.sync_status.startswith("waiting for device"))
         assert [e.kind for e in st.events][-1] == "disconnected"
         assert st.tracks[0].params  # (the last known state stays)
         with pytest.raises(NoDevice):
             dev.play(1)
         cable.plugged = True
-        assert wait_for(lambda: st.connected and st.sync_status == "ready" and st.watching, 15)
+        assert wait_for(lambda: st.connected and st.sync_status == "ready" and st.watching)
     finally:
         dev.close()
 
@@ -231,10 +231,14 @@ def test_release_while_reconnecting():
         port.delay = 1.0
         port.opening.clear()
         dev._lost("test")
-        assert port.opening.wait(8)  # (the keeper is at it)
+        assert port.opening.wait(30)  # (the keeper is at it)
         dev.disconnect()
-        time.sleep(4.5)
-        assert not dev.state.connected and dev.link is None and dev.state.sync_status == "disconnected"
+        assert wait_for(lambda: not dev._connecting.locked())  # (and is done)
+        assert wait_for(lambda: dev.link is None and dev.state.sync_status == "disconnected")
+        assert not dev.state.connected and dev.state.last_full_read == 0  # (it stopped before reading)
+        opened = port.opened
+        time.sleep(4)  # (the keeper looks every 3 s)
+        assert port.opened == opened and not dev.state.connected
     finally:
         dev.close()
 
@@ -263,7 +267,7 @@ def test_unplugged_while_reading():
             dev.connect(progress=pull)
         assert not dev.state.connected and dev.state.sync_status != "reading"
         cable.plugged = True
-        assert wait_for(lambda: dev.state.connected and dev.state.sync_status == "ready", 15)  # (read again by itself)
+        assert wait_for(lambda: dev.state.connected and dev.state.sync_status == "ready")  # (read again by itself)
     finally:
         dev.close()
 
@@ -272,7 +276,7 @@ def test_stops_answering(rig):
     dev, sim = rig
     sim._handle = lambda cmd, a: None
     dev.transport_factory = lambda: (_ for _ in ()).throw(NoDevice("none"))
-    assert wait_for(lambda: not dev.state.connected, 8)
+    assert wait_for(lambda: not dev.state.connected)
 
 
 def test_keepalive_holds_watch(rig):

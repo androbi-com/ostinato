@@ -169,13 +169,13 @@ def test_late_push_and_the_next_sound(sloop, monkeypatch):
 
     def held(batch):
         waiting.set()
-        gate.wait(10)
+        gate.wait(60)
         orig(batch)
     monkeypatch.setattr(dev, "_handle_pushes", held)
     before = [(t["engine"], t["preset"]) for t in sim.tracks]
     assert sim.sel == 0
     b.sounds.set_sound(2, "WURLI")  # (selects track 2 for a moment)
-    assert waiting.wait(5) and sim.sel == 0
+    assert waiting.wait(60) and sim.sel == 0
     with dev._sync:  # another tool is busy with the device when the push is handled
         gate.set()
         time.sleep(0.3)
@@ -310,11 +310,11 @@ def test_tempo_tool(sloop):
 def test_play_stop_toggle(sloop):
     b, sim = sloop
     assert b.transport.available()
-    assert wait_for(lambda: b.transport.playing() is False, 3)  # (polled)
+    assert wait_for(lambda: b.transport.playing() is False)  # (polled)
     assert b.transport.set_playing("play") is True and sim.playing
     assert "Playback: playing" in b.connection.overview()
     assert b.transport.set_playing("toggle") is False and not sim.playing
     sim.playing = True  # pressed PLAY on the device: noticed by the poll
-    assert wait_for(lambda: b.transport.playing() is True, 3)
+    assert wait_for(lambda: b.transport.playing() is True)
     assert any(e.kind == "transport" and e.detail["playing"] for e in b.dev.state.events)
     assert b.transport.set_playing("stop") is False

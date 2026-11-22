@@ -149,6 +149,9 @@ class SloopDevice:
             if info is None:
                 raise NoDevice("no FM-1 answered: " + "; ".join(errors))
         self._start_threads()
+        if not self._want_connected:  # (released while the port was opened; later, closing the link ends the read)
+            self.disconnect()
+            raise NoDevice("released while connecting")
         if read:
             try:
                 self.read_all(progress)

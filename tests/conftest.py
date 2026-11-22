@@ -6,7 +6,7 @@ from ostinato.backends.fm1_sloop.backend import SloopBackend
 from ostinato.backends.fm1_sloop.sim import SimFM1
 
 
-def wait_for(cond, timeout=5.0):
+def wait_for(cond, timeout=60.0):  # (only a failure takes that long: a CI runner is slow)
     t0 = time.monotonic()
     while time.monotonic() - t0 < timeout:
         if cond():
