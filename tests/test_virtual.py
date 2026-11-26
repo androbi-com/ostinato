@@ -10,7 +10,7 @@ from conftest import wait_for
 from ostinato import states as ST
 from ostinato.backends.virtual_gm import player as PL
 from ostinato.backends.virtual_gm.backend import DeviceSetup, VirtualBackend
-from ostinato.model import Event, Grid, Note, Sequence
+from ostinato.model import Event, Grid, GrooveUse, Note, Sequence
 from ostinato.session import Session
 
 
@@ -380,6 +380,66 @@ def test_a_sketch_goes_to_the_fm1_and_back(virtual, sloop):
     assert [e.pitches for e in s.read(2).sounding()] == [e.pitches for e in f.read(2).sounding()]
 
 
+def test_groove_is_kept_by_ostinato(virtual, cfgdir):
+    """The groove is Ostinato's (grooves.json, per kind of device), not the device's: a new session has it, and
+    knows what is written into the tracks."""
+    from ostinato.session import Session
+
+    s = Session(virtual)
+    for t in (1, 2, 3):
+        s.write(t, seq(*[ev(i, 60) for i in range(16)]), "sixteenths")
+    s.write(4, seq(*[ev(i, 42) for i in range(16)], kind="drums"), "hats")
+    s.set_groove_preset("samba")
+    assert "virtual_gm" in json.loads((cfgdir / "grooves.json").read_text())
+    t = Session(virtual)
+    assert t.groove().name == "samba" and t.groove_tracks() == [1, 2, 3, 4]
+    assert all(e.offset == 0 for e in t.read(1).events)
+    assert "groove" not in json.dumps(virtual.dev.state["project"])  # (the device knows only offsets)
+
+
+def test_groove_goes_to_the_fm1_and_back(virtual, sloop):
+    """A state with a groove, from the virtual device to the FM-1 (its nudges) and back."""
+    s, (b, sim) = Session(virtual), sloop
+    for t in (1, 2, 3):
+        s.write(t, seq(*[ev(i, 60 + t) for i in range(16)]), "sixteenths")
+    s.write(4, seq(*[ev(i, 42) for i in range(16)], kind="drums"), "hats")
+    s.set_groove_preset("samba")
+    s.save_state("samba sketch", exact=False)
+    f = Session(b, previous=s)
+    assert f.groove_supported()  # (SLOOP's nudges)
+    f.load_state("samba sketch")
+    assert any(x.startswith("groove:") for x in f.compare_state())
+    f.apply_state(backup=False)
+    assert f.groove().name == "samba" and f.groove_tracks() == [1, 2, 3, 4]
+    with b.dev.state.lock:
+        micro = list(b.dev.state.tracks[0].micro[:4])
+    assert micro == [0, 0, -8, -6]  # (written into the FM-1's nudges)
+    assert all(e.offset == 0 for e in f.read(1).events)
+    # and back: the FM-1's state onto the virtual device
+    f.save_state("from fm1", exact=False)
+    s.set_groove(None)
+    s.load_state("from fm1")
+    s.apply_state(backup=False)
+    assert s.groove().name == "samba" and [round(e.offset * 4 * 64) for e in virtual.reader.read(1).events[:4]] \
+        == [0, 0, -8, -6]
+    assert all(e.offset == 0 for e in s.read(1).events)
+
+
+def test_fm1_nudges_come_over_as_offsets(virtual, sloop):
+    """A nudge set on the FM-1 (no groove) arrives on the virtual device as the note's own offset."""
+    s, (b, sim) = Session(virtual), sloop
+    f = Session(b, previous=s)
+    f.write(1, seq(ev(0, 60), ev(4, 62)), "notes")
+    n = f.read(1)
+    n.events[1].offset = F(5, 64) / 4
+    f.write(1, n, "nudge")
+    assert f.read(1).events[1].offset == F(5, 256)
+    f.save_state("nudged", exact=False)
+    s.load_state("nudged")
+    s.apply_state(tracks=[1], parts=["notes"], backup=False)
+    assert s.read(1).events[1].offset == F(5, 256)
+
+
 def test_the_process_ends(virtual):
     b = virtual
     s = Session(b)
@@ -400,3 +460,165 @@ def test_never_started():
     b = VirtualBackend()
     assert "No device connected" in b.connection.not_ready() and b.tracks.list_tracks() == []
     Session(b).close()
+
+
+# ---------------------------------------------------------------------- grooves
+
+def test_groove_model():
+    from ostinato.model import Groove
+
+    g = Groove.from_percents([0, 10, -10, 0])
+    assert g.values == [0, 6, -6, 0]  # (10% of 64 = 6.4 -> 6)
+    assert g.lag(F(1, 4)) == F(6, 64) / 4 and g.lag(F(1, 4) + 1) == g.lag(F(1, 4))  # (repeats every 4 steps)
+    assert g.lag(F(3, 8)) == 0  # (halfway from +6 to -6)
+    assert g.resample(F(1, 4), 8).values == [0, 6, -6, 0] * 2
+    assert g.resample(F(1, 8), 4).values == [0, 6, 12, 0]  # (on 1/32: the same lag, in 1/64 of the shorter step)
+    assert Groove.from_percents([10], res=8).values == [1] and Groove.from_percents([90]).values == [31]
+    for bad in ([32], [-33], [1.5], []):
+        with pytest.raises(ValueError):
+            Groove(bad)
+    with pytest.raises(ValueError):
+        Groove([0], res=10)
+    assert Groove.from_dict(g.to_dict()) == g
+
+
+def test_groove_timing_at_120(virtual):
+    """Four sixteenths at 120 BPM, groove 0 / +10% / -10% / 0: 0, 137.5, 237.5, 375 ms (to 1/64 of a step). The
+    session writes the groove into the notes' offsets; the device only plays offsets."""
+    from ostinato.session import Session
+
+    s = Session(virtual)
+    for t in (1, 2, 3):
+        s.write(t, seq(*[ev(i, 60) for i in range(4)], steps=4), "sixteenths")
+    s.write(4, seq(*[ev(i, 42) for i in range(4)], steps=4, kind="drums"), "hats")
+    s.set_groove([0, 10, -10, 0])
+    raw = virtual.reader.read(1)  # (what is on the device)
+    assert [round(e.offset * 4 * 64) for e in raw.events] == [0, 6, -6, 0]
+    assert all(e.offset == 0 for e in s.read(1).events)  # (what everything above sees)
+    ms = [h[0] * 500 for h in PL.compile_hits(raw)]
+    for got, want in zip(ms, [0, 137.5, 237.5, 375]):
+        assert abs(got - want) <= 125 / 128
+    # a nudge of the notes' own is kept apart from the groove
+    own = s.read(2)
+    own.events[1].offset = F(1, 64)
+    s.write(2, own, "nudge")
+    assert s.read(2).events[1].offset == F(1, 64)
+    assert virtual.reader.read(2).events[1].offset == F(1, 64) + F(6, 256)
+    s.set_groove(None)
+    assert [e.offset for e in virtual.reader.read(2).events] == [0, F(1, 64), 0, 0]
+
+
+def test_groove_use_rules():
+    from ostinato.model import Groove, GrooveUse
+
+    g = Groove([0, 6, -10, -10])
+    a, b = Grid(F(1, 4), 16, "1/16"), Grid(F(1, 4), 32, "1/16")
+    odd, eighths = Grid(F(1, 4), 6, "1/16"), Grid(F(1, 2), 16, "1/8")
+    assert g.fits(a) and g.fits(b) and not g.fits(odd) and not g.fits(eighths)
+    assert g.fits_all([a, a]) and not g.fits_all([a, b])
+    grids = {1: a, 2: a, 3: a, 4: a}
+    use = GrooveUse()
+    assert all(use.plays(g, t, grids) for t in grids) and use.after_lengths(g, grids, dict(grids)) is use
+    # a length changes: "all" is off; the tracks that still fit keep it, one by one
+    new = {**grids, 2: odd}
+    u = use.after_lengths(g, grids, new)
+    assert u == GrooveUse(False, [1, 3, 4]) and not u.plays(g, 2, new) and u.plays(g, 1, new)
+    # back to the same length: nothing comes back by itself
+    assert u.after_lengths(g, new, grids) == GrooveUse(False, [1, 3, 4])
+    # one by one: a track that no longer fits loses it, one that still fits keeps it
+    assert u.after_lengths(g, grids, {**grids, 1: b, 3: eighths}) == GrooveUse(False, [1, 4])
+    assert GrooveUse.from_dict(u.to_dict()) == u and GrooveUse.from_dict(None) == GrooveUse()
+
+
+def test_one_groove_and_its_tracks(virtual):
+    from ostinato.session import Session
+
+    s = Session(virtual)
+    assert s.groove() is None
+    for t in (1, 2, 3):
+        s.write(t, seq(*[ev(i, 60) for i in range(16)]), "sixteenths")
+    s.write(4, seq(*[ev(i, 42) for i in range(16)], kind="drums"), "hats")
+    with pytest.raises(ValueError, match="must divide"):
+        s.set_groove([0, 10, 0])
+    before, after = s.set_groove([0, 15, -15, -15])
+    assert before is None and after.values == [0, 10, -10, -10] and after.step == F(1, 4)
+    assert s.groove_use().all and s.groove_tracks() == [1, 2, 3, 4]
+    # a length changes: no longer on all tracks; the ones that fit keep it, one by one
+    s.set_length(2, steps=6)
+    assert s.groove_use() == GrooveUse(False, [1, 3, 4]) and s.groove_tracks() == [1, 3, 4]
+    assert any("no longer applied to all" in e.text for e in s.events_since(0))
+    with pytest.raises(ValueError, match="same length"):
+        s.set_groove([0, 10])
+    with pytest.raises(ValueError, match="same length"):
+        s.set_groove_use(True)
+    with pytest.raises(ValueError, match="does not fit"):
+        s.set_groove_use(None, {2: True})
+    assert s.set_groove_use(None, {3: False}).tracks == [1, 4] and s.groove_tracks() == [1, 4]
+    # the same length again: nothing is switched on by itself; then all, by the user
+    s.set_length(2, steps=16)
+    assert s.groove_tracks() == [1, 4]
+    assert s.set_groove_use(None, {2: True}).tracks == [1, 2, 4]
+    assert s.set_groove_use(True).all and s.groove_tracks() == [1, 2, 3, 4]
+    with pytest.raises(ValueError, match="all tracks"):
+        s.set_groove_use(None, {2: False})
+    # kept in a saved state
+    s.set_groove_use(False, {3: False})
+    s.save_state("swung")
+    s.set_groove(None)
+    assert s.groove() is None and s.groove_tracks() == []
+    s.load_state("swung")
+    s.apply_state()
+    assert s.groove().values == [0, 10, -10, -10] and s.groove_use() == GrooveUse(False, [1, 2, 4])
+    with pytest.raises(ValueError):
+        s.set_groove([0, 10], res=10)
+    # straight: no track plays it, the groove is kept; all brings it back
+    assert s.set_groove_use(False, {t: False for t in (1, 2, 3, 4)}) == GrooveUse(False, [])
+    assert s.groove_tracks() == [] and s.groove().values == [0, 10, -10, -10]
+    assert s.set_groove_use(True).all and s.groove_tracks() == [1, 2, 3, 4]
+    s.set_length(2, steps=7)
+    assert s.set_groove(None)[1] is None  # (straight: always)
+
+
+def test_groove_presets():
+    from ostinato.music import grooves as GR
+
+    assert GR.fit(GR.BY_NAME["samba"], F(1, 4)).values == [0, 0, -8, -6]
+    assert GR.fit(GR.BY_NAME["jazz_swing_medium"], F(1, 4)) is None  # (would need more than half a step)
+    assert GR.fit(GR.BY_NAME["jembe_manjanin"], F(1, 4)) is None  # (ternary: not on a binary grid)
+    assert GR.fit(GR.BY_NAME["jembe_woloso"], F(1, 6)) is None  # (binary: not on a ternary grid)
+    assert len(GR.fit(GR.BY_NAME["viennese_waltz"], F(1, 2)).values) == 6
+    for p in GR.PRESETS:  # (every preset goes onto its own grid, and is found again)
+        assert GR.matching(GR.fit(p, p.step)) is p
+
+
+def test_groove_preset_on_the_device(virtual):
+    from ostinato.session import Session
+
+    s = Session(virtual)
+    for t in (1, 2, 3):
+        s.write(t, seq(*[ev(i, 60) for i in range(16)]), "sixteenths")
+    s.write(4, seq(*[ev(i, 42) for i in range(16)], kind="drums"), "hats")
+    fits = {p.name: ok for p, ok, _ in s.groove_presets()}
+    assert fits["samba"] and fits["breakbeat_swing"] and not fits["jazz_swing_medium"]
+    _, g = s.set_groove_preset("Samba")
+    assert g.values == [0, 0, -8, -6] and g.name == "samba" and s.groove_tracks() == [1, 2, 3, 4]
+    # custom: the same steps, no longer the preset; a moved step is custom too
+    g = s.set_groove_custom()
+    assert g.values == [0, 0, -8, -6] and g.name == "" and s.groove().name == ""
+    s.set_groove_preset("samba")
+    assert s.groove().name == "samba"
+    s.set_groove([0, 0, -12.5, 0])
+    assert s.groove().name == ""
+    with pytest.raises(ValueError, match="does not go onto"):
+        s.set_groove_preset("jazz swing medium")
+    with pytest.raises(ValueError, match="no groove preset"):
+        s.set_groove_preset("polka")
+
+
+def test_groove_preset_compatibility():
+    from ostinato.backends.virtual_gm.backend import GRIDS
+    from ostinato.music import grooves as GR
+
+    assert GR.compat_text(GR.BY_NAME["viennese_waltz"], GRIDS) == "1/4, length N×3; 1/8, length N×6"
+    assert GR.compatible(GR.BY_NAME["jazz_swing_fast"], GRIDS) == [("1/8", 2)]
+    assert GR.compatible(GR.BY_NAME["jembe_manjanin"], GRIDS) == [("8T", 3), ("16T", 6)]

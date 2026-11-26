@@ -199,7 +199,7 @@ def register(mcp, manager) -> None:
         out = {"version": __version__, "status": st, "backend": cls.title if cls else None,
                "capabilities": st.get("capabilities", []), "log_version": 0, "tracks": [], "tempo": None,
                "tempo_range": None, "tempo_note": None, "signatures": list(MT.CHOICES),
-               "armed": [], "controls": [], "algorithms": [], "playing": None}
+               "armed": [], "controls": [], "algorithms": [], "playing": None, "groove": None}
         if s is not None and s is m.session:  # (else the device was changed just now: the next poll has it)
             out["log_version"] = s.version
             # (not connected: as without a device; the last known state is Claude's to ask for)
@@ -230,7 +230,26 @@ def register(mcp, manager) -> None:
                     ctrls = ([{"name": n, "kind": k, "description": d} for n, k, d in s.backend.controls.sources()]
                              if s.backend.controls else [])
                     r = s.tempo_range()
-                    return {"tracks": tracks, "armed": armed, "algorithms": algos, "controls": ctrls,
+                    groove = None
+                    if s.groove_supported():
+                        grid, why = s.groove_grid()
+                        g, use, grids = s.groove(), s.groove_use(), s.grids()
+                        groove = {"groove": _groove_json(g), "blocked": why,
+                                  "grid": {"steps": grid.steps, "step": float(grid.step), "name": grid.name}
+                                  if grid else None,
+                                  "use": use.to_dict(), "playing": s.groove_tracks(),
+                                  "fits_all": bool(g) and g.fits_all(list(grids.values())),
+                                  "lengths": [{"track": t, "steps": gr.steps if gr else None,
+                                               "step": float(gr.step) if gr else None, "name": gr.name if gr else None,
+                                               "beats": float(gr.steps * gr.step) if gr else None,
+                                               "fits": bool(g) and g.fits(gr)} for t, gr in grids.items()]}
+                        from .music import grooves as GR
+
+                        groove["preset"] = g.name if g is not None and g.name in GR.BY_NAME else None
+                        groove["presets"] = [{"name": p.name, "label": p.label, "description": p.description,
+                                              "source": p.source, "fits": fits, "compat": compat}
+                                             for p, fits, compat in s.groove_presets()]
+                    return {"tracks": tracks, "groove": groove, "armed": armed, "algorithms": algos, "controls": ctrls,
                             "tempo": s.tempo(), "tempo_note": s.tempo_note(),
                             "tempo_range": {"min": r[0], "max": r[1], "step": r[2]} if r else None}
                 out.update(await run(collect))
@@ -405,6 +424,52 @@ def register(mcp, manager) -> None:
             return JSONResponse({"error": str(e)}, status_code=400)
         return JSONResponse({"text": f"track {t}: " + ", ".join(out) if out else "nothing to change"})
 
+    @mcp.custom_route("/api/ui/groove", methods=["POST"])
+    async def groove(request: Request):
+        """{"values": [n, ...], "res": 64} (per step, in 1/res of a step), or {"straight": true}: every track's."""
+        s, err = session_or_error()
+        if err:
+            return err
+        d = await body(request)
+        try:
+            res = int(d.get("res") or 64)
+            values = d.get("values")
+            if d.get("custom"):
+                after = await run(s.set_groove_custom)
+                return JSONResponse({"groove": _groove_json(after), "text": "custom groove"})
+            if d.get("preset"):
+                _, after = await run(s.set_groove_preset, str(d["preset"]))
+                return JSONResponse({"groove": _groove_json(after), "text": "groove preset set"})
+            if d.get("straight") or not values:
+                percents = None
+            elif isinstance(values, list) and all(isinstance(v, int) and not isinstance(v, bool) for v in values):
+                percents = [v * 100 / res for v in values]
+            else:
+                raise ValueError("values: whole numbers (1/res of a step)")
+            _, after = await run(s.set_groove, percents, res)
+        except (ValueError, RuntimeError) as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"groove": _groove_json(after), "text": "groove set" if after else "straight"})
+
+    @mcp.custom_route("/api/ui/groove/use", methods=["POST"])
+    async def groove_use(request: Request):
+        """{"all": bool} and / or {"track": n, "on": bool}: which tracks play the groove; {"none": true}: none (the
+        groove is kept)."""
+        s, err = session_or_error()
+        if err:
+            return err
+        d = await body(request)
+        try:
+            all_tracks = bool(d["all"]) if "all" in d else None
+            tracks = {int(d["track"]): bool(d.get("on"))} if "track" in d else None
+            if d.get("none"):
+                all_tracks, tracks = False, {t.track: False for t in s.tracks()}
+            use = await run(s.set_groove_use, all_tracks, tracks)
+        except (ValueError, RuntimeError, TypeError) as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"use": use.to_dict(), "text": "groove on all tracks" if use.all else
+                             "groove on " + (", ".join(f"track {t}" for t in use.tracks) or "no track")})
+
     @mcp.custom_route("/api/ui/track/{track}/undo", methods=["POST"])
     async def undo(request: Request):
         s, err = session_or_error()
@@ -574,6 +639,10 @@ def register(mcp, manager) -> None:
             conf = await run(cls.save, d.get("values") or {})
         return JSONResponse({"values": conf.values, "notes": conf.notes, "source": conf.source,
                              "exists": conf.path.exists()})
+
+
+def _groove_json(g) -> dict | None:
+    return {"values": list(g.values), "res": g.res, "step": float(g.step)} if g else None
 
 
 def _mix_json(m) -> dict | None:

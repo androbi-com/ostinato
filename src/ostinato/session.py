@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any
 
-from .model import DeviceEvent, Grid, Key, Meter, MixValue, Sequence, TrackInfo, WriteReport
+from .model import DeviceEvent, Grid, Groove, GrooveUse, Key, Meter, MixValue, Sequence, TrackInfo, WriteReport
 from .music import meter as MT
 
 log = logging.getLogger("ostinato.session")
@@ -105,6 +105,7 @@ class Session:
         # a saved state read from its file (ostinato.states.SavedState)
         self.loaded = previous.loaded if previous is not None else None
         self._signatures = self._load_signatures()  # track -> its fixed time signature (the others: auto)
+        self._load_grooves()  # the groove (Ostinato's: written into the tracks as timing offsets)
         self.engine = None
         if backend.reader is not None and backend.writer is not None:
             from .generative.engine import GenerativeEngine
@@ -146,7 +147,7 @@ class Session:
         if self.backend.reader is None:
             raise NotSupported("this device cannot be read")
         self.track_info(track)
-        seq = self.backend.reader.read(track, refresh)
+        seq = self._shifted(self.backend.reader.read(track, refresh), self._rendered.get(track), -1)
         seq.meter = self._meter_of(track, seq.length)
         return seq
 
@@ -315,6 +316,270 @@ class Session:
                  source=source)
         return before, after
 
+    # ---------------------------------------------------------- groove
+    # The groove is Ostinato's, not the device's: one groove, and which tracks play it (model.GrooveUse: all of them,
+    # or tracks chosen one by one). It is kept here, per kind of device (<config>/grooves.json), and written into the
+    # tracks as per-step timing offsets (Event.offset), which every device with `WriteLimits.offset` plays (SLOOP: its
+    # nudges). What is on the device is the notes' own offsets plus the groove written into that track (_rendered):
+    # read() takes the groove off, write() puts the wanted one on, so everything above sees the notes without it.
+    # Its steps are edited only while every track has the same length; "all" is switched on only by the user (a length
+    # change switches it off), a track only while its length fits the groove.
+    def groove_supported(self) -> bool:
+        b = self.backend
+        return (b.reader is not None and b.writer is not None and bool(self.tracks())
+                and all(b.writer.limits(t.track).offset for t in self.tracks()))
+
+    def _need_groove(self) -> None:
+        if not self.groove_supported():
+            raise NotSupported("this device cannot play timing offsets, so it has no groove")
+
+    def _load_grooves(self) -> None:
+        from .config import config_dir
+
+        self._groove: Groove | None = None
+        self._use = GrooveUse()
+        self._rendered: dict[int, Groove | None] = {}  # track -> the groove written into it on the device
+        self._grids_seen: dict[int, tuple] | None = None  # the tracks' lengths the use was last checked against
+        try:
+            data = json.loads((config_dir() / "grooves.json").read_text(encoding="utf-8")).get(self.backend.name) or {}
+            self._groove = Groove.from_dict(data["groove"]) if data.get("groove") else None
+            self._use = GrooveUse.from_dict(data.get("use"))
+            self._rendered = {int(t): Groove.from_dict(g) if g else None for t, g in (data.get("rendered") or {}).items()}
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+            log.warning("grooves.json: %s", e)
+
+    def _save_grooves(self) -> None:
+        from .config import config_dir
+
+        path = config_dir() / "grooves.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        data[self.backend.name] = {"groove": self._groove.to_dict() if self._groove else None,
+                                   "use": self._use.to_dict(),
+                                   "rendered": {str(t): g.to_dict() if g else None
+                                                for t, g in sorted(self._rendered.items())}}
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+        except OSError as e:
+            log.warning("saving grooves.json: %s", e)
+
+    @staticmethod
+    def _shifted(seq: Sequence, groove: Groove | None, sign: int) -> Sequence:
+        """The sequence with the groove's lag added (sign 1) or taken off (-1) its events' offsets."""
+        if groove is None:
+            return seq
+        out = seq.copy()
+        for e in out.events:
+            e.offset = e.offset + sign * groove.lag(e.start)
+        return out
+
+    @staticmethod
+    def _same_groove(a: Groove | None, b: Groove | None) -> bool:
+        """The same timing (a preset's name aside)."""
+        key = lambda g: None if g is None else (tuple(g.values), g.step, g.res)
+        return key(a) == key(b)
+
+    def _raw_grids(self) -> dict[int, Grid | None]:
+        return {t.track: self.backend.reader.read(t.track).grid for t in self.tracks()}
+
+    def _wanted(self, track: int, grids: dict[int, Grid | None]) -> Groove | None:
+        return self._groove if self._use.plays(self._groove, track, grids) else None
+
+    def _check_lengths(self) -> None:
+        """A track's length changed (here or on the device): "all" is switched off, a track that no longer fits loses
+        the groove (GrooveUse.after_lengths), and the tracks are written again where that changes them."""
+        if self._groove is None or not self.groove_supported():
+            return
+        with self._lock:
+            now = self._raw_grids()
+            key = {t: (g.steps, g.step) if g else None for t, g in now.items()}
+            if self._grids_seen is not None and key != self._grids_seen:
+                old = {t: Grid(k[1], k[0]) if k else None for t, k in self._grids_seen.items()}
+                use = self._use.after_lengths(self._groove, old, now)
+                if use != self._use:
+                    self._use = use
+                    self._save_grooves()
+                    self.log("groove", None, "a track's length changed: the groove is no longer applied to all tracks; "
+                             "it plays on " + (", ".join(f"track {t}" for t in use.tracks) or "no track"))
+            self._grids_seen = key
+            self._sync()
+
+    def _sync(self, skip: int | None = None) -> None:
+        """Write the groove into every track where what is on the device is not what is wanted (not into `skip`)."""
+        with self._lock:
+            grids = self._raw_grids()
+            changed = False
+            for t in grids:
+                if t == skip:
+                    continue
+                want = self._wanted(t, grids)
+                if self._same_groove(want, self._rendered.get(t)):
+                    self._rendered[t] = want  # (the same timing: only the preset's name may differ)
+                    continue
+                base = self.read(t)
+                self.backend.writer.write(t, self._shifted(base, want, 1), "groove")
+                self._rendered[t] = want
+                changed = True
+            self._grids_seen = {t: (g.steps, g.step) if g else None for t, g in self._raw_grids().items()}
+            self._save_grooves()
+            if changed:
+                self.log("groove", None, "groove written into " + (", ".join(
+                    f"track {t}" for t in grids if self._rendered.get(t) is not None) or "no track (all straight)"))
+
+    def groove(self) -> Groove | None:
+        self._need_groove()
+        return self._groove
+
+    def groove_use(self) -> GrooveUse:
+        self._need_groove()
+        self._check_lengths()
+        return self._use
+
+    def grids(self) -> dict[int, Grid | None]:
+        return {t.track: self.read(t.track).grid for t in self.tracks()}
+
+    def groove_tracks(self) -> list[int]:
+        """The tracks that play the groove now."""
+        self._need_groove()
+        self._check_lengths()
+        grids = self.grids()
+        return [t for t in grids if self._wanted(t, grids) is not None]
+
+    def groove_grid(self) -> tuple[Grid | None, str | None]:
+        """-> (the grid every track has, None) or (None, why the groove's steps cannot be edited: the tracks' lengths
+        differ)."""
+        grids = self.grids()
+        if any(g is None for g in grids.values()):
+            return None, "a groove needs a step grid on every track"
+        if len({(g.steps, g.step) for g in grids.values()}) > 1:
+            return None, ("a groove needs every track to have the same length; now "
+                          + ", ".join(f"track {t}: {g.steps} × {g.name}" for t, g in grids.items()))
+        return next(iter(grids.values())), None
+
+    def set_groove(self, percents: list[float] | None, res: int = 64, source: str = "server"
+                   ) -> tuple[Groove | None, Groove | None]:
+        """percents: per step, % of a step late (+) or early (-), repeated over the pattern; None or []: straight
+        (always possible). Rounded to 1/res of a step. Only when every track has the same length, and the groove's
+        steps divide it (ValueError otherwise). A new groove (none before) is applied to all tracks; changed steps
+        keep the tracks it is applied to. -> (before, after)."""
+        self._need_groove()
+        before = self._groove
+        new = None
+        if percents:
+            grid, why = self.groove_grid()
+            if why:
+                raise ValueError(why)
+            if grid.steps % len(percents):
+                raise ValueError(f"a groove of {len(percents)} steps does not fit patterns of {grid.steps} steps: its "
+                                 f"length must divide theirs ("
+                                 + ", ".join(str(n) for n in range(1, min(grid.steps, 64) + 1) if grid.steps % n == 0)
+                                 + ")")
+            new = Groove.from_percents(percents, grid.step, res)
+        return before, self._put_groove(before, new, source)
+
+    def _put_groove(self, before: Groove | None, new: Groove | None, source: str) -> Groove | None:
+        with self._lock:
+            self._check_lengths()
+            self._groove = new
+            if new is not None and before is None:
+                self._use = GrooveUse(True, [])
+            self._sync()
+        self.log("groove", None, (new.text() + (f" (preset {new.name})" if new.name else "")) if new
+                 else "groove off (straight)", source=source)
+        return new
+
+    def set_groove_custom(self, source: str = "server") -> Groove | None:
+        """The groove stays as it is, but is no longer a preset: a custom groove. -> the groove."""
+        self._need_groove()
+        g = self._groove
+        if g is None or not g.name:
+            return g
+        return self._put_groove(g, Groove(list(g.values), g.step, g.res), source)
+
+    def groove_presets(self) -> list[tuple[object, bool, str]]:
+        """Every preset (music.grooves.Preset), whether it goes onto the tracks now (their common step length and a
+        multiple of its cycle), and the sequences it goes onto ("1/4, length N×3; 1/8, length N×6")."""
+        from .music import grooves as GR
+
+        grid, _ = self.groove_grid()
+        tracks = self.tracks()
+        names = self.backend.writer.limits(tracks[0].track).grids if self.backend.writer and tracks else {}
+        out = []
+        for p in GR.PRESETS:
+            g = GR.fit(p, grid.step) if grid is not None else None
+            out.append((p, g is not None and grid.steps % len(g.values) == 0, GR.compat_text(p, names)))
+        return out
+
+    def set_groove_preset(self, name: str, source: str = "server") -> tuple[Groove | None, Groove | None]:
+        """The groove becomes a preset (music.grooves), fitted to the tracks' step length. ValueError when the tracks
+        differ in length or the preset does not go onto their steps. -> (before, after)."""
+        from .music import grooves as GR
+
+        self._need_groove()
+        p = GR.BY_NAME.get(str(name).strip().lower().replace(" ", "_").replace("-", "_"))
+        if p is None:
+            raise ValueError(f"no groove preset {name!r} (presets: {', '.join(GR.BY_NAME)})")
+        grid, why = self.groove_grid()
+        if why:
+            raise ValueError(why)
+        g = GR.fit(p, grid.step)
+        if g is None:
+            raise ValueError(f"the preset {p.label!r} does not go onto {grid.name} steps (it was measured on steps of "
+                             f"{p.step} beats)")
+        if grid.steps % len(g.values):
+            raise ValueError(f"the preset {p.label!r} needs a pattern length of a multiple of {len(g.values)} steps")
+        before = self._groove
+        return before, self._put_groove(before, g, source)
+
+    def set_groove_use(self, all_tracks: bool | None = None, tracks: dict[int, bool] | None = None,
+                       source: str = "server") -> GrooveUse:
+        """all_tracks: apply the groove to every track (only when all have the same length, which fits it), or not
+        (the tracks that fit keep it, one by one). tracks: {track: on} one by one (only with all_tracks off; on only
+        where the track's length fits). ValueError when not possible. -> what plays it now."""
+        self._need_groove()
+        with self._lock:
+            self._check_lengths()
+            g, use, grids = self._groove, self._use, self.grids()
+            if g is None:
+                raise ValueError("there is no groove (set one first)")
+            new = GrooveUse(use.all, list(use.tracks))
+            if all_tracks is not None and all_tracks != use.all:
+                if all_tracks:
+                    if not g.fits_all(list(grids.values())):
+                        _, why = self.groove_grid()
+                        raise ValueError(why or f"the groove ({len(g.values)} steps of {float(g.step):g} beats) does "
+                                                f"not fit the tracks' length")
+                    new = GrooveUse(True, [])
+                else:
+                    new = GrooveUse(False, [t for t in grids if g.fits(grids[t])])
+            for t, on in (tracks or {}).items():
+                if t not in grids:
+                    raise ValueError(f"no track {t}")
+                if new.all:
+                    raise ValueError("the groove is applied to all tracks: switch that off to choose tracks")
+                if on and not g.fits(grids[t]):
+                    gr = grids[t]
+                    raise ValueError(f"track {t} ({gr.steps} × {gr.name}) does not fit the groove ({len(g.values)} "
+                                     f"steps of {float(g.step):g} beats): it needs that step length and a multiple "
+                                     f"of its steps")
+                new.tracks = sorted(set(new.tracks) | {t}) if on else [x for x in new.tracks if x != t]
+            if new != use:
+                self._use = new
+                self._sync()
+                self.log("groove", None, "groove on all tracks" if new.all else
+                         "groove on " + (", ".join(f"track {t}" for t in new.tracks) or "no track"), source=source)
+            return self._use
+
+    def groove_state(self) -> dict:
+        """For a saved state: the groove, its tracks, and what is written into each track on the device."""
+        return {"groove": self._groove.to_dict() if self._groove else None, "use": self._use.to_dict(),
+                "rendered": {str(t): g.to_dict() if g else None for t, g in sorted(self._rendered.items())}}
+
     def track_muted(self, track: int) -> bool:
         if self.backend.mixer is None:
             raise NotSupported("this device cannot mute tracks")
@@ -402,8 +667,24 @@ class Session:
         if self.backend.writer is None:
             raise NotSupported("this device cannot be written to")
         with self._lock:
+            grooved = self._groove is not None and self.groove_supported()
+            if grooved:
+                self._check_lengths()  # (lengths changed on the device first)
             before = self.read(track)
-            report = self.backend.writer.write(track, seq, label)
+            want = None
+            if grooved:  # (the new length may switch "all" off, or take the groove off this track)
+                old = self._raw_grids()
+                new = {**old, track: seq.grid}
+                use = self._use.after_lengths(self._groove, old, new)
+                if use != self._use:
+                    self._use = use
+                    self.log("groove", None, f"track {track}'s length changed: the groove is no longer applied to all "
+                             "tracks; it plays on " + (", ".join(f"track {t}" for t in use.tracks) or "no track"))
+                want = self._groove if use.plays(self._groove, track, new) else None
+            report = self.backend.writer.write(track, self._shifted(seq, want, 1), label)
+            if grooved or self._rendered.get(track) is not None:
+                self._rendered[track] = want
+                self._sync(skip=track)
             if record and (report.changed or report.length_changed or report.grid_changed):
                 h = self.history.setdefault(track, [])
                 h.append((label, before))
@@ -537,6 +818,14 @@ class Session:
                 cur = self.read(n)
                 diffs.append(f"notes differ ({len(cur.sounding())} now, {len(seq.sounding())} saved)")
             out.append(f"track {n}: " + ("; ".join(diffs) if diffs else "as saved"))
+        sg = s.data.get("groove")
+        if sg is not None and self.groove_supported():
+            saved = Groove.from_dict(sg["groove"]) if sg.get("groove") else None
+            if not self._same_groove(saved, self._groove) or GrooveUse.from_dict(sg.get("use")) != self._use:
+                out.append("groove: " + (self._groove.text() if self._groove else "straight") + " -> "
+                           + (saved.text() if saved else "straight") + " (with the globals)")
+            else:
+                out.append("groove: as saved")
         return out
 
     def _apply_generic(self, s, t: int, parts: list[str], foreign: bool) -> list[str]:
@@ -562,6 +851,7 @@ class Session:
             try:
                 seq, notes = NIO.fit(seq, b.writer.limits(t), seq.grid.name if seq.grid else None, round_to=None)
                 rep = b.writer.write(t, seq, f"state {s.name}")
+                self._rendered[t] = None  # (the saved notes are without the groove: _sync puts it on)
                 out.append(f"track {t}: {rep.changed} step(s)" + "".join(f"; {n}" for n in notes + rep.notes))
             except ValueError as e:
                 out.append(f"track {t}: notes not written ({e})")
@@ -648,6 +938,18 @@ class Session:
                     if foreign and "globals" in parts and s.data.get("tempo") and self.tempo_range():
                         _, now = self.set_tempo(s.data["tempo"])
                         out.append(f"tempo {now:g} BPM")
+            sg = s.data.get("groove") or {}
+            if self.groove_supported():
+                rendered = {int(k): Groove.from_dict(v) if v else None for k, v in (sg.get("rendered") or {}).items()}
+                if exact or (not foreign and b.states and why is None and "notes" in parts):
+                    for t in (all_tracks if exact else tracks):  # (the device's own data: as it was written then)
+                        self._rendered[t] = rendered.get(t)
+                if (exact or "globals" in parts) and "groove" in sg:
+                    self._groove = Groove.from_dict(sg["groove"]) if sg.get("groove") else None
+                    self._use = GrooveUse.from_dict(sg.get("use"))
+                    out.append("groove: " + (self._groove.text() if self._groove else "straight"))
+                self._grids_seen = None
+                self._sync()
             if "notes" in (parts or ("notes",)):
                 for t in tracks:  # (how they are counted goes with the notes; older states do not say)
                     sig = next((x.get("signature") for x in s.data.get("tracks", []) if x["track"] == t), None)

@@ -210,7 +210,8 @@ class _Writer(_Parts):
         grids = {n: DIV_BEATS[n] for n in (names or DIV_BEATS) if n in DIV_BEATS}
         drum = st.is_drum(t)
         return WriteLimits(grids=grids, max_steps=st.info.nstep, max_notes=16 if drum else 4, velocity=not drum,
-                           levels=True, ratchet=True, accent=not drum, slide=not drum, muted=not drum, offset=False,
+                           levels=True, ratchet=True, accent=not drum, slide=not drum, muted=not drum,
+                           offset=bool(st.info and st.info.proto >= 7),  # (the steps' nudges, 1/64 of a step)
                            drum_voices={gm: name for gm, name in P.DRUM_LANES} if drum else None)
 
     def write(self, track: int, seq: Sequence, label: str = "") -> WriteReport:
@@ -298,7 +299,20 @@ class _Writer(_Parts):
                 raise ValueError(f"the device has no DIV {div_name}")
             params[dp[0]] = dp[1]
         res = self.dev.write_track(t, steps, params, label=label or "write", source="server", record=False)
-        return WriteReport(len(res["changed"]), notes_out, length_changed=L != cur_len, grid_changed=div_name != cur_div)
+        changed = set(res["changed"])
+        if st.info.proto >= 7:  # each step's timing offset, as its nudge (-32..31 in 1/64 of a step)
+            micro = [0] * nstep
+            for i, e in starts.items():
+                v = round(e.offset / q * 64)
+                if not -32 <= v <= 31:
+                    notes_out.append(f"step {i + 1}: a nudge of {float(e.offset / q) * 100:+.0f}% of a step is past "
+                                     "the device's -50..+48%: kept at the edge")
+                micro[i] = max(-32, min(31, v))
+            with st.lock:
+                cur = list(st.tracks[t].micro or [0] * nstep)
+            changed |= {i for i in range(nstep) if i < len(cur) and cur[i] != micro[i]}
+            self.dev.write_micro(t, micro)
+        return WriteReport(len(changed), notes_out, length_changed=L != cur_len, grid_changed=div_name != cur_div)
 
 
 class _Keys(_Parts):

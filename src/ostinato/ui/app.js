@@ -1,12 +1,13 @@
 // Ostinato's browser UI: the start of the page. Talks only to the device server's /api/ui/* (the same session as
 // Claude's tools). ES modules, no build step; Preact and htm are in vendor/ (index.html maps their names).
 //   store.js   what the page knows (signals), polling, actions      api.js   the HTTP API, toasts
-//   header.js, tracks.js (Preact components), roll.js (the piano roll as SVG)
+//   header.js, tracks.js, groove.js (Preact components), roll.js (the piano roll as SVG)
 //   states.js, settings.js, activity.js (build their DOM with dom.js)
 import { render } from "preact";
 import { computed, effect } from "@preact/signals";
 import { loadLog } from "./activity.js";
 import { $ } from "./dom.js";
+import { Groove } from "./groove.js";
 import { Header } from "./header.js";
 import { html } from "./html.js";
 import { loadSetups } from "./settings.js";
@@ -17,6 +18,7 @@ import { Tracks } from "./tracks.js";
 // the Preact parts of the page
 render(html`<${Header} />`, $("#header"));
 render(html`<${Tracks} />`, $("#tab-tracks"));
+render(html`<${Groove} />`, $("#tab-groove"));
 
 // the activity log follows the server's log
 const logVersion = computed(() => (state.value ? state.value.log_version : 0));

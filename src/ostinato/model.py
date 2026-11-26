@@ -78,6 +78,128 @@ class Grid:
 
 
 @dataclass
+class Groove:
+    """A track's feel: per step, how late (+) or early (-) it is played, in 1/res of a step (res 64: 1/64 step,
+    SLOOP's nudge unit). Between the steps the lag is interpolated linearly (where a finer grid has steps of its own),
+    and it repeats every len(values) steps, so a 16-step groove serves a 32-step pattern too. It is defined on its
+    own step length (beats): on a pattern of another step length it is sampled where that pattern's steps fall.
+    Kept as numbers of steps, never as milliseconds: the tempo does not change it.
+
+    Values are within -res/2 .. res/2 - 1 (-50% .. just under +50%): the steps never pass each other."""
+    values: list[int]
+    step: Fraction = Fraction(1, 4)  # beats per step of the groove (1/4: sixteenths)
+    res: int = 64  # divisions of a step
+    name: str = ""  # the preset it was set from (music.grooves); "": a custom groove
+
+    RESOLUTIONS = (2, 4, 8, 16, 32, 64)
+
+    def __post_init__(self) -> None:
+        if self.res not in self.RESOLUTIONS:
+            raise ValueError(f"a groove's resolution is one of {', '.join(map(str, self.RESOLUTIONS))}, not {self.res}")
+        if not 1 <= len(self.values) <= 64:
+            raise ValueError("a groove has 1..64 steps")
+        lo, hi = -self.res // 2, self.res // 2 - 1
+        for v in self.values:
+            if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+                raise ValueError(f"a groove's values are whole numbers {lo}..{hi} (1/{self.res} of a step), not {v!r}")
+        self.step = Fraction(self.step)
+        if self.step <= 0:
+            raise ValueError("a groove's step is longer than 0")
+
+    @classmethod
+    def from_percents(cls, percents: list[float], step: Fraction = Fraction(1, 4), res: int = 64) -> "Groove":
+        """Percent of a step (+10: a tenth of a step late), rounded to 1/res of a step and to the range."""
+        lo, hi = -res // 2, res // 2 - 1
+        return cls([max(lo, min(hi, round(float(p) * res / 100))) for p in percents], Fraction(step), res)
+
+    @property
+    def percents(self) -> list[float]:
+        return [v * 100 / self.res for v in self.values]
+
+    @property
+    def length(self) -> Fraction:
+        return self.step * len(self.values)
+
+    @property
+    def unit(self) -> Fraction:
+        """The finest offset: 1/res of a step, in beats."""
+        return self.step / self.res
+
+    def lag(self, beat: Fraction) -> Fraction:
+        """The time lag (beats) at a position (beats from the pattern's start), rounded to the unit."""
+        n = len(self.values)
+        pos = (Fraction(beat) % self.length) / self.step
+        i = int(pos)
+        a, b = self.values[i], self.values[(i + 1) % n]
+        return round(a + (b - a) * (pos - i)) * self.unit
+
+    def resample(self, step: Fraction, steps: int) -> "Groove":
+        """The same lag, for `steps` steps of `step` beats (repeated or interpolated)."""
+        step = Fraction(step)
+        return Groove([max(-self.res // 2, min(self.res // 2 - 1, round(self.lag(i * step) / step * self.res)))
+                       for i in range(steps)], step, self.res)
+
+    def fits(self, grid: "Grid | None") -> bool:
+        """Can a track of this grid play it? The groove's step length, and a whole number of grooves in the pattern."""
+        return grid is not None and grid.step == self.step and grid.steps % len(self.values) == 0
+
+    def fits_all(self, grids: list["Grid | None"]) -> bool:
+        """Can it be applied to every track: all of the same length, and that length fits."""
+        return (bool(grids) and all(g is not None for g in grids)
+                and len({(g.steps, g.step) for g in grids}) == 1 and self.fits(grids[0]))
+
+    def to_dict(self) -> dict:
+        return {"values": list(self.values), "step": str(self.step), "res": self.res,
+                **({"name": self.name} if self.name else {})}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Groove":
+        return cls(list(d["values"]), Fraction(d.get("step", "1/4")), int(d.get("res", 64)), str(d.get("name") or ""))
+
+    def text(self) -> str:
+        return (f"groove of {len(self.values)} steps of {float(self.step):g} beats, 1/{self.res} step: "
+                + " ".join(f"{p:+.1f}%" for p in self.percents))
+
+
+@dataclass
+class GrooveUse:
+    """Which tracks play the groove: all of them (only while all have the same length, which fits it), or the
+    tracks chosen one by one (each only while its own length fits). Nothing is switched on by itself: a change of a
+    track's length switches "all" off (the tracks that still fit keep the groove, one by one) and takes the groove
+    off a track that no longer fits."""
+    all: bool = True
+    tracks: list[int] = field(default_factory=list)  # 1-based; used when not all
+
+    def plays(self, groove: "Groove | None", track: int, grids: dict[int, "Grid | None"]) -> bool:
+        if groove is None or not groove.fits(grids.get(track)):
+            return False
+        return groove.fits_all(list(grids.values())) if self.all else track in self.tracks
+
+    def after_lengths(self, groove: "Groove | None", old: dict[int, "Grid | None"],
+                      new: dict[int, "Grid | None"]) -> "GrooveUse":
+        """What it becomes when the tracks' grids change from old to new."""
+        def key(g):
+            return (g.steps, g.step) if g else None
+        if groove is None or all(key(old.get(t)) == key(g) for t, g in new.items()):
+            return self
+        if self.all:
+            return GrooveUse(False, sorted(t for t, g in new.items() if groove.fits(g)))
+        return GrooveUse(False, sorted(t for t in self.tracks if groove.fits(new.get(t))))
+
+    def to_dict(self) -> dict:
+        return {"all": self.all, "tracks": list(self.tracks)}
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> "GrooveUse":
+        if not d:
+            return cls()
+        tracks = d.get("tracks") or []
+        if not isinstance(tracks, list) or not all(isinstance(t, int) and not isinstance(t, bool) for t in tracks):
+            raise ValueError(f"not a list of tracks: {tracks!r}")
+        return cls(bool(d.get("all", True)), sorted(set(tracks)))
+
+
+@dataclass
 class Sequence:
     kind: Kind
     length: Fraction  # beats: where the sequence loops

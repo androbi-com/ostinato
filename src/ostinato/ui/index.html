@@ -20,6 +20,7 @@
 
 <nav class="tabs" role="tablist">
   <button role="tab" data-tab="tracks" aria-selected="true">Tracks</button>
+  <button role="tab" data-tab="groove" aria-selected="false">Groove</button>
   <button role="tab" data-tab="states" aria-selected="false">States</button>
   <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
   <button role="tab" data-tab="activity" aria-selected="false">Activity</button>
@@ -27,6 +28,7 @@
 
 <main>
   <section id="tab-tracks" class="tab"></section>
+  <section id="tab-groove" class="tab" hidden></section>
   <section id="tab-states" class="tab" hidden>
     <p class="lead">Save the device's whole state to a file on this computer (notes, sounds, mix, settings), and put
       it back later, all of it or part of it. Loading a state only reads it: nothing changes on the device until you

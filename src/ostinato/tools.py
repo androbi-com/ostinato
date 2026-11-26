@@ -10,6 +10,7 @@ session; nothing here knows a firmware.
     sounds:                ostinato_instruments, ostinato_set_instrument
     transport:             ostinato_play
     tempo_control:         ostinato_set_tempo
+    writer + reader:       ostinato_set_groove (Ostinato's groove, written as timing offsets: WriteLimits.offset)
     reader (states):       ostinato_save_state, ostinato_list_states, ostinato_load_state, ostinato_show_state,
                            ostinato_delete_state; + writer: ostinato_apply_state
     writer (+ reader):     ostinato_write_notes, ostinato_write_midi, ostinato_set_length, ostinato_clear_track, ostinato_undo,
@@ -194,7 +195,11 @@ def register(mcp, session) -> list[str]:
                     if seq.grid else None,
                     "signature": str(seq.meter) if seq.meter else None,
                     "signature_setting": session.signature_setting(track),
-                    "key": SC.key_name(key) if key else None, "events": evs}
+                    "key": SC.key_name(key) if key else None,
+                    **({"groove": (g := session.groove()) and
+                        {"percents": g.percents, "step_beats": float(g.step), "resolution": g.res}}
+                       if session.groove_supported() else {}),
+                    "events": evs}
 
         @tool(RO)
         async def ostinato_refresh(track: int | None = None) -> str:
@@ -438,6 +443,98 @@ def register(mcp, session) -> list[str]:
                         + (f" Asked for {asked:g}; {rng}." if after != asked else ""))
             note = session.tempo_note()
             return text + (f" Note: {note}." if note else "")
+
+    # ------------------------------------------------------------------ groove
+    if b.reader is not None and b.writer is not None:  # (whether the device plays timing offsets: when it is used)
+        @tool(WRITE)
+        async def ostinato_set_groove(percents: list[float] | None = None, resolution: int = 64,
+                                      straight: bool = False, apply_to: str | list[int] | None = None,
+                                      remove: bool = False, preset: str | None = None) -> str:
+            """The groove: per step, how late (+) or early (-) it is played, in % of a step (with 1/16 steps, +10 is a
+            tenth of a sixteenth late). There is one groove. Its steps can be set only while every track has the
+            same length (steps and step length; ostinato_set_length), and its length must divide theirs: else it is
+            refused. The list repeats over the pattern ([0, 15]: swung sixteenths). In steps, not milliseconds: it
+            follows the tempo. Ostinato keeps it and writes it into the steps' timing offsets (the FM-1's nudges);
+            the notes and their own nudges do not change (what the tools show is without the groove).
+            Which tracks play it: "all" (a new groove starts so; possible only while all tracks have the same length,
+            which fits) or chosen tracks, e.g. [1, 4] (each only while its length fits: the groove's step length and
+            a multiple of its steps). Changing a track's length switches "all" off (the tracks that still fit keep
+            the groove) and takes it off a track that no longer fits; nothing is switched back on by itself.
+            percents: e.g. [0, 10, -16, -16]; each within -50..+48. resolution: 64 (default), 32, 16, 8, 4 or 2
+              divisions of a step (64: 1.5625% steps).
+            straight=true: every track plays straight; the groove is kept (apply_to brings it back).
+            apply_to: "all", or the list of tracks to play it (the others play straight).
+            remove=true: delete the groove itself (its steps are lost; always possible).
+            preset="custom": keep the steps, but as a custom groove (no longer the preset's).
+            preset: a feel measured in recordings (see GROOVES.md), fitted to the tracks' step length: "samba",
+              "jazz_swing_medium", "jazz_swing_fast" (both on 1/8 steps), "breakbeat_swing", "viennese_waltz" (1/4 or
+              1/8 steps), "jembe_manjanin" (8T steps), "jembe_woloso". Same conditions as percents.
+            Without any of them: the groove, which tracks play it, the presets that go onto the tracks now, and what
+            can be changed now."""
+            if (e := ready()):
+                return e
+            if not await _run(session.groove_supported):
+                return "This device cannot play timing offsets, so it cannot play a groove."
+
+            def now() -> str:
+                g = session.groove()
+                if g is None:
+                    _, why = session.groove_grid()
+                    return "Groove: straight (no groove)." + (f" One cannot be set now: {why}." if why else "")
+                use, grids, playing = session.groove_use(), session.grids(), session.groove_tracks()
+                lines = ["Groove: " + g.text() + ".",
+                         "Applied to: " + ("all tracks" if use.all else
+                                           ", ".join(f"track {t}" for t in use.tracks) or "no track")
+                         + "; heard on " + (", ".join(f"track {t}" for t in playing) or "no track") + "."]
+                fit = [t for t, gr in grids.items() if g.fits(gr)]
+                lines.append("Tracks whose length fits it: " + (", ".join(map(str, fit)) or "none")
+                             + ("; all tracks can take it" if g.fits_all(list(grids.values())) else "") + ".")
+                _, why = session.groove_grid()
+                if why:
+                    lines.append(f"Its steps cannot be changed now: {why}.")
+                from .music import grooves as GR
+
+                if (p := GR.BY_NAME.get(g.name)) is not None:
+                    lines.append(f"It is the preset {p.label!r} ({p.source}).")
+                else:
+                    lines.append("It is a custom groove (not a preset).")
+                return "\n".join(lines)
+
+            def presets() -> str:
+                ps = session.groove_presets()
+                ok = [f"{p.name} ({p.label}: {p.description})" for p, fits, _ in ps if fits]
+                every = [f"{p.name}: {compat}" for p, _, compat in ps]
+                return (("Presets for the tracks now: " + "; ".join(ok) + "." if ok else
+                         "No preset goes onto the tracks now.")
+                        + " Each preset goes onto (step length, pattern length): " + " | ".join(every) + ".")
+            if percents is None and not straight and apply_to is None and not remove and preset is None:
+                return "\n".join([await _run(now), await _run(presets)])
+            out = []
+            try:
+                if straight and session.groove() is not None:
+                    await _run(session.set_groove_use, False, {x.track: False for x in session.tracks()})
+                if preset is not None and preset.strip().lower() == "custom" and not remove:
+                    await _run(session.set_groove_custom)
+                elif preset is not None and not remove:
+                    before, after = await _run(session.set_groove_preset, preset)
+                    out.append(f"Groove set from the preset; was {before.text() if before else 'straight'}.")
+                elif remove or percents is not None:
+                    before, after = await _run(session.set_groove, None if remove else percents, resolution)
+                    text = "Groove: " + (after.text() if after else "straight (no groove)")
+                    if after and percents and any(abs(p - q) > 1e-9 for p, q in zip(percents, after.percents)):
+                        text += f" (rounded to 1/{after.res} of a step)"
+                    out.append(text + f"; was {before.text() if before else 'straight'}.")
+                if apply_to is not None and not straight and not remove:
+                    if isinstance(apply_to, str) and apply_to.strip().lower() == "all":
+                        await _run(session.set_groove_use, True)
+                    elif isinstance(apply_to, list):
+                        tr = [x.track for x in session.tracks()]
+                        await _run(session.set_groove_use, False, {t: t in apply_to for t in tr})
+                    else:
+                        return 'apply_to: "all" or a list of tracks, e.g. [1, 4]'
+            except (ValueError, RuntimeError) as ex:
+                return "\n".join(out + [f"Not changed: {ex}."])
+            return "\n".join(out + [await _run(now)])
 
     # ------------------------------------------------------------------ saved states
     if b.reader is not None:

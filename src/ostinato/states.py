@@ -4,6 +4,8 @@ A state file is JSON, in <config>/states/<name>.json (or any path):
 
     ostinato_state   1 (this format)
     name, note, saved_at, device {backend, title, firmware}, tempo
+    groove           Ostinato's groove {groove, use (which tracks play it), rendered (per track, the groove written into
+                     the backend's data and the exact copy)}; the tracks' sequences are without it
     tracks           the generic part, any device: per track its kind, sound (instrument), key, time signature (the
                      setting, "auto" or e.g. "6/8", and the one in force), level / pan / mute (as the device shows them) and the notes (a Sequence: events with start / length in beats)
     backend          the backend's own data (its `states` capability): on SLOOP every parameter, step, lock, nudge,
@@ -157,7 +159,8 @@ def build(session, name: str, note: str | None, exact: bool) -> tuple[dict, list
     data = {"ostinato_state": FORMAT, "name": name, "note": note or "",
             "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "device": {"backend": b.name, "title": b.title, "firmware": st.get("firmware")},
-            "tempo": session.tempo(), "tracks": tracks, "backend": backend_data, "exact": ex}
+            "tempo": session.tempo(), "tracks": tracks, "backend": backend_data, "exact": ex,
+            "groove": session.groove_state() if session.groove_supported() else None}
     return data, warnings
 
 

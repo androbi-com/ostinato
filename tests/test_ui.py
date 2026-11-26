@@ -180,6 +180,25 @@ def test_mix(ui):
     assert st == 400
 
 
+def test_groove_on_the_fm1(ui):
+    """The groove is Ostinato's: on the FM-1 it is written into the steps' nudges; presets and custom on the page."""
+    c, _, _ = ui
+    _, s = c.json("GET", "/api/ui/state")
+    g = s["groove"]
+    assert g is not None and g["groove"] is None and g["blocked"] is None
+    assert any(p["name"] == "samba" and p["fits"] for p in g["presets"])
+    st, r = c.json("POST", "/api/ui/groove", {"preset": "samba"})
+    assert st == 200
+    _, s = c.json("GET", "/api/ui/state")
+    assert s["groove"]["preset"] == "samba" and s["groove"]["playing"] == [1, 2, 3, 4]
+    st, r = c.json("POST", "/api/ui/groove", {"custom": True})
+    _, s = c.json("GET", "/api/ui/state")
+    assert st == 200 and s["groove"]["preset"] is None and s["groove"]["groove"]["values"] == [0, 0, -8, -6]
+    st, r = c.json("POST", "/api/ui/groove/use", {"none": True})
+    _, s = c.json("GET", "/api/ui/state")
+    assert st == 200 and s["groove"]["playing"] == [] and s["groove"]["groove"] is not None
+
+
 def test_states_routes(ui):
     c, _, _ = ui
     st, r = c.json("POST", "/api/ui/states/save", {"name": "ui test", "note": "n"})
