@@ -96,8 +96,8 @@ class Groove:
     def __post_init__(self) -> None:
         if self.res not in self.RESOLUTIONS:
             raise ValueError(f"a groove's resolution is one of {', '.join(map(str, self.RESOLUTIONS))}, not {self.res}")
-        if not 1 <= len(self.values) <= 64:
-            raise ValueError("a groove has 1..64 steps")
+        if not 2 <= len(self.values) <= 64:  # (one step would only move the whole track: no groove)
+            raise ValueError("a groove has 2..64 steps")
         lo, hi = -self.res // 2, self.res // 2 - 1
         for v in self.values:
             if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:

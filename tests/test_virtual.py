@@ -473,12 +473,12 @@ def test_groove_model():
     assert g.lag(F(3, 8)) == 0  # (halfway from +6 to -6)
     assert g.resample(F(1, 4), 8).values == [0, 6, -6, 0] * 2
     assert g.resample(F(1, 8), 4).values == [0, 6, 12, 0]  # (on 1/32: the same lag, in 1/64 of the shorter step)
-    assert Groove.from_percents([10], res=8).values == [1] and Groove.from_percents([90]).values == [31]
-    for bad in ([32], [-33], [1.5], []):
+    assert Groove.from_percents([10, 0], res=8).values == [1, 0] and Groove.from_percents([90, 0]).values == [31, 0]
+    for bad in ([32, 0], [-33, 0], [1.5, 0], [], [0]):  # (one step: no groove)
         with pytest.raises(ValueError):
             Groove(bad)
     with pytest.raises(ValueError):
-        Groove([0], res=10)
+        Groove([0, 0], res=10)
     assert Groove.from_dict(g.to_dict()) == g
 
 
@@ -533,7 +533,11 @@ def test_groove_on_tracks_of_different_lengths(virtual):
     s.set_groove([0, 10, -10, -10])
     s.set_groove_use(True)
     assert any(ok for p, ok, _ in s.groove_presets() if p.name == "samba")
-    s.set_length(4, div="1/8")
+    with pytest.raises(ValueError, match="2..64 steps"):  # (one step would only move the whole track)
+        s.set_groove([10])
+    s.set_length(4, steps=33)  # (64 and 33 steps: no common divisor of 2 or more)
+    assert s.groove_grid()[0] is None and "common divisor" in s.groove_grid()[1]
+    s.set_length(4, steps=32, div="1/8")
     assert s.groove_grid()[0] is None and "same step length" in s.groove_grid()[1]
     with pytest.raises(ValueError, match="same step length"):
         s.set_groove([0, 10])
@@ -578,7 +582,7 @@ def test_one_groove_and_its_tracks(virtual):
     s.set_length(2, steps=6)
     assert s.groove_use() == GrooveUse(False, [1, 3, 4]) and s.groove_tracks() == [1, 3, 4]
     assert any("no longer applied to all" in e.text for e in s.events_since(0))
-    with pytest.raises(ValueError, match="must divide 2"):  # (16 and 6 steps: a groove of 1 or 2 steps)
+    with pytest.raises(ValueError, match="must divide 2"):  # (16 and 6 steps: a groove of 2 steps)
         s.set_groove([0, 10, -10, -10])
     with pytest.raises(ValueError, match="does not fit"):
         s.set_groove_use(True)

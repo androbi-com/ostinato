@@ -252,10 +252,16 @@ button.play.on { color: var(--accent); border-color: var(--accent); }
 .track-num.drums { background: color-mix(in srgb, var(--drum) 15%, transparent); color: var(--drum); }
 .len-bar-box { min-width: 120px; }
 .len-bar { display: flex; height: 16px; gap: 1px; }
-.len-bar span { flex: 1; background: var(--grid); border-radius: 2px; }
+.len-bar span:not(.cycle) { flex: 1; background: var(--grid); border-radius: 2px; }
 .len-bar span.b { background: var(--beat); }
-.len-row.plays .len-bar span { background: color-mix(in srgb, var(--note) 30%, var(--grid)); }
+.len-row.plays .len-bar span:not(.cycle) { background: color-mix(in srgb, var(--note) 30%, var(--grid)); }
 .len-row.plays .len-bar span.b { background: color-mix(in srgb, var(--note) 55%, var(--grid)); }
+/* one turn of the groove: its steps grouped and underlined, the turns alternating */
+.len-bar.cycles { height: 22px; gap: 4px; }
+.len-bar .cycle { display: flex; gap: 1px; padding-bottom: 4px; border-bottom: 3px solid var(--muted); min-width: 0; }
+.len-bar .cycle.odd { border-bottom-color: var(--beat); }
+.len-row.plays .len-bar .cycle { border-bottom-color: var(--note); }
+.len-row.plays .len-bar .cycle.odd { border-bottom-color: color-mix(in srgb, var(--note) 45%, var(--panel)); }
 .len-groove { justify-self: end; }
 .tag.ok { color: var(--ok); }
 .tag.warn { color: var(--warn); }

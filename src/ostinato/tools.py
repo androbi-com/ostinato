@@ -452,12 +452,13 @@ def register(mcp, session) -> list[str]:
                                       remove: bool = False, preset: str | None = None) -> str:
             """The groove: per step, how late (+) or early (-) it is played, in % of a step (with 1/16 steps, +10 is a
             tenth of a sixteenth late). There is one groove. Its steps can be set only while every track has the
-            same step length (ostinato_set_length), and its length must divide every track's length (64 and 32
-            steps: up to 32): else it is refused. The list repeats over the pattern ([0, 15]: swung sixteenths). In steps, not milliseconds: it
-            follows the tempo. Ostinato keeps it and writes it into the steps' timing offsets (the FM-1's nudges);
+            same step length (ostinato_set_length), and its length (2 steps or more) must divide every track's length
+            (64 and 32 steps: 2 to 32): else it is refused. The list repeats over the pattern ([0, 15]: swung
+            sixteenths). In steps, not milliseconds: it follows the tempo. Ostinato keeps it and writes it into the steps' timing offsets (the FM-1's nudges);
             the notes and their own nudges do not change (what the tools show is without the groove).
-            Which tracks play it: "all" (a new groove starts so; possible only while every track's length fits) or chosen tracks, e.g. [1, 4] (each only while its length fits: the groove's step length and
-            a multiple of its steps). Changing a track's length switches "all" off (the tracks that still fit keep
+            Which tracks play it: "all" (a new groove starts so; possible only while every track's length fits) or
+            chosen tracks, e.g. [1, 4] (each only while its length fits: the groove's step length and a multiple of
+            its steps). Changing a track's length switches "all" off (the tracks that still fit keep
             the groove) and takes it off a track that no longer fits; nothing is switched back on by itself.
             percents: e.g. [0, 10, -16, -16]; each within -50..+48. resolution: 64 (default), 32, 16, 8, 4 or 2
               divisions of a step (64: 1.5625% steps).

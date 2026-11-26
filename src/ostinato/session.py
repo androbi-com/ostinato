@@ -462,7 +462,11 @@ class Session:
             return None, ("a groove needs every track to have the same step length; now "
                           + ", ".join(f"track {t}: {g.steps} × {g.name}" for t, g in grids.items()))
         first = next(iter(grids.values()))
-        return Grid(first.step, math.gcd(*(g.steps for g in grids.values())), first.name), None
+        common = math.gcd(*(g.steps for g in grids.values()))
+        if common < 2:
+            return None, ("a groove repeats evenly on every track only if their lengths have a common divisor of 2 or "
+                          "more; now " + ", ".join(f"track {t}: {g.steps} × {g.name}" for t, g in grids.items()))
+        return Grid(first.step, common, first.name), None
 
     def set_groove(self, percents: list[float] | None, res: int = 64, source: str = "server"
                    ) -> tuple[Groove | None, Groove | None]:
@@ -480,7 +484,7 @@ class Session:
             if grid.steps % len(percents):
                 raise ValueError(f"a groove of {len(percents)} steps does not repeat evenly on every track: its "
                                  f"length must divide {grid.steps} ("
-                                 + ", ".join(str(n) for n in range(1, min(grid.steps, 64) + 1) if grid.steps % n == 0)
+                                 + ", ".join(str(n) for n in range(2, min(grid.steps, 64) + 1) if grid.steps % n == 0)
                                  + ")")
             new = Groove.from_percents(percents, grid.step, res)
         return before, self._put_groove(before, new, source)

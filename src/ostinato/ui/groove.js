@@ -85,13 +85,28 @@ function LengthRow({ l, st, gs, max }) {
   const divs = lim ? (lim.grids.includes(l.name) ? lim.grids : [l.name, ...lim.grids]) : [l.name];
   // the bar: as long as the pattern (to scale), one cell per step, the beats marked
   const perBeat = data && data.meter ? Math.max(1, Math.round(data.meter.beat / l.step)) : 4;
-  const cells = [];
-  for (let i = 0; i < (l.steps || 0); i++) cells.push(html`<span key=${i} class=${i % perBeat === 0 ? "b" : ""}></span>`);
+  const cell = i => html`<span key=${i} class=${i % perBeat === 0 ? "b" : ""}></span>`;
+  // where the groove fits, the steps are grouped by its length: each group, underlined, is one turn of the groove
+  const n = g && l.fits ? g.values.length : 0;
+  let bar;
+  if (n) {
+    bar = [];
+    for (let k = 0; k * n < l.steps; k++) {
+      const cs = [];
+      for (let i = k * n; i < Math.min((k + 1) * n, l.steps); i++) cs.push(cell(i));
+      bar.push(html`<span key=${k} class="cycle ${k % 2 ? "odd" : ""}" style=${`flex:${cs.length}`}
+        title=${`steps ${k * n + 1}–${k * n + cs.length}: the groove's turn ${k + 1} of ${l.steps / n}`}>${cs}</span>`);
+    }
+  } else {
+    bar = Array.from({ length: l.steps || 0 }, (_, i) => cell(i));
+  }
   return html`
     <div class="len-row ${plays ? "plays" : ""}">
       <span class="track-num ${t.kind === "drums" ? "drums" : ""}">${l.track}</span>
       <span class="len-name" title=${t.instrument || ""}>${t.instrument || t.name}</span>
-      <div class="len-bar-box"><div class="len-bar" style=${`width:${(100 * (l.beats || 0)) / max}%`}>${cells}</div></div>
+      <div class="len-bar-box">
+        <div class="len-bar ${n ? "cycles" : ""}" style=${`width:${(100 * (l.beats || 0)) / max}%`}>${bar}</div>
+      </div>
       <span class="pattern">
         <input type="number" min="1" max=${lim ? lim.max_steps : 64} step="1" value=${l.steps}
           aria-label=${`Steps of track ${l.track}`} onChange=${onSteps} disabled=${!lim} />
@@ -123,7 +138,7 @@ function GrooveEditor({ st, gs }) {
   const n = values.length;
   const reach = Math.round(range.value * RES / 100);
   const lo = -reach, hi = Math.min(reach, RES / 2 - 1);
-  const divisors = Array.from({ length: Math.min(steps, 64) }, (_, i) => i + 1).filter(k => steps % k === 0);
+  const divisors = Array.from({ length: Math.min(steps, 64) }, (_, i) => i + 1).filter(k => k >= 2 && steps % k === 0);
 
   const send = async next => {
     draft.value = next;
