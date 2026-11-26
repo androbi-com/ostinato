@@ -434,6 +434,9 @@ def register(mcp, manager) -> None:
         try:
             res = int(d.get("res") or 64)
             values = d.get("values")
+            if d.get("straight") and s.groove() is not None:
+                after = await run(s.set_groove_straight)
+                return JSONResponse({"groove": _groove_json(after), "text": "every step at 0%"})
             if d.get("custom"):
                 after = await run(s.set_groove_custom)
                 return JSONResponse({"groove": _groove_json(after), "text": "custom groove"})

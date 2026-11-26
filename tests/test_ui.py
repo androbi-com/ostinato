@@ -194,6 +194,9 @@ def test_groove_on_the_fm1(ui):
     st, r = c.json("POST", "/api/ui/groove", {"custom": True})
     _, s = c.json("GET", "/api/ui/state")
     assert st == 200 and s["groove"]["preset"] is None and s["groove"]["groove"]["values"] == [0, 0, -8, -6]
+    st, r = c.json("POST", "/api/ui/groove", {"straight": True})
+    _, s = c.json("GET", "/api/ui/state")
+    assert st == 200 and s["groove"]["groove"]["values"] == [0, 0, 0, 0] and s["groove"]["playing"] == [1, 2, 3, 4]
     st, r = c.json("POST", "/api/ui/groove/use", {"none": True})
     _, s = c.json("GET", "/api/ui/state")
     assert st == 200 and s["groove"]["playing"] == [] and s["groove"]["groove"] is not None

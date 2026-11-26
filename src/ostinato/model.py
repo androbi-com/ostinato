@@ -144,9 +144,8 @@ class Groove:
         return grid is not None and grid.step == self.step and grid.steps % len(self.values) == 0
 
     def fits_all(self, grids: list["Grid | None"]) -> bool:
-        """Can it be applied to every track: all of the same length, and that length fits."""
-        return (bool(grids) and all(g is not None for g in grids)
-                and len({(g.steps, g.step) for g in grids}) == 1 and self.fits(grids[0]))
+        """Can it be applied to every track: every track's length fits it (lengths may differ)."""
+        return bool(grids) and all(self.fits(g) for g in grids)
 
     def to_dict(self) -> dict:
         return {"values": list(self.values), "step": str(self.step), "res": self.res,
@@ -163,7 +162,7 @@ class Groove:
 
 @dataclass
 class GrooveUse:
-    """Which tracks play the groove: all of them (only while all have the same length, which fits it), or the
+    """Which tracks play the groove: all of them (only while every track's length fits it), or the
     tracks chosen one by one (each only while its own length fits). Nothing is switched on by itself: a change of a
     track's length switches "all" off (the tracks that still fit keep the groove, one by one) and takes the groove
     off a track that no longer fits."""

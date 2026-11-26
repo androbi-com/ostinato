@@ -508,6 +508,37 @@ def test_groove_timing_at_120(virtual):
     assert [e.offset for e in virtual.reader.read(2).events] == [0, F(1, 64), 0, 0]
 
 
+def test_groove_on_tracks_of_different_lengths(virtual):
+    """Tracks of 64 and 32 steps: the groove's steps can be edited (up to 32 of them), and it goes onto all of them;
+    another step length blocks editing."""
+    from ostinato.session import Session
+
+    s = Session(virtual)
+    for t in (1, 2, 3):
+        s.write(t, seq(*[ev(i, 60) for i in range(64)], steps=64), "64")
+    s.write(4, seq(*[ev(i, 42) for i in range(32)], steps=32, kind="drums"), "32")
+    grid, why = s.groove_grid()
+    assert why is None and grid.steps == 32 and grid.step == F(1, 4)
+    s.set_groove([0, 10, -10, -10])
+    assert s.groove_tracks() == [1, 2, 3, 4]
+    assert [round(e.offset * 4 * 64) for e in virtual.reader.read(4).events[:4]] == [0, 6, -6, -6]
+    with pytest.raises(ValueError, match="must divide 32"):
+        s.set_groove([0] * 64)
+    # straight: every step to 0, the length and the tracks stay
+    s.set_groove_preset("samba")
+    s.set_groove_use(False, {2: False})
+    g = s.set_groove_straight()
+    assert g.values == [0, 0, 0, 0] and g.name == "" and s.groove_tracks() == [1, 3, 4]
+    assert all(e.offset == 0 for e in virtual.reader.read(1).events)
+    s.set_groove([0, 10, -10, -10])
+    s.set_groove_use(True)
+    assert any(ok for p, ok, _ in s.groove_presets() if p.name == "samba")
+    s.set_length(4, div="1/8")
+    assert s.groove_grid()[0] is None and "same step length" in s.groove_grid()[1]
+    with pytest.raises(ValueError, match="same step length"):
+        s.set_groove([0, 10])
+
+
 def test_groove_use_rules():
     from ostinato.model import Groove, GrooveUse
 
@@ -515,7 +546,7 @@ def test_groove_use_rules():
     a, b = Grid(F(1, 4), 16, "1/16"), Grid(F(1, 4), 32, "1/16")
     odd, eighths = Grid(F(1, 4), 6, "1/16"), Grid(F(1, 2), 16, "1/8")
     assert g.fits(a) and g.fits(b) and not g.fits(odd) and not g.fits(eighths)
-    assert g.fits_all([a, a]) and not g.fits_all([a, b])
+    assert g.fits_all([a, a]) and g.fits_all([a, b]) and not g.fits_all([a, odd])  # (lengths may differ)
     grids = {1: a, 2: a, 3: a, 4: a}
     use = GrooveUse()
     assert all(use.plays(g, t, grids) for t in grids) and use.after_lengths(g, grids, dict(grids)) is use
@@ -547,9 +578,9 @@ def test_one_groove_and_its_tracks(virtual):
     s.set_length(2, steps=6)
     assert s.groove_use() == GrooveUse(False, [1, 3, 4]) and s.groove_tracks() == [1, 3, 4]
     assert any("no longer applied to all" in e.text for e in s.events_since(0))
-    with pytest.raises(ValueError, match="same length"):
-        s.set_groove([0, 10])
-    with pytest.raises(ValueError, match="same length"):
+    with pytest.raises(ValueError, match="must divide 2"):  # (16 and 6 steps: a groove of 1 or 2 steps)
+        s.set_groove([0, 10, -10, -10])
+    with pytest.raises(ValueError, match="does not fit"):
         s.set_groove_use(True)
     with pytest.raises(ValueError, match="does not fit"):
         s.set_groove_use(None, {2: True})

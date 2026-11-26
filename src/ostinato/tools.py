@@ -452,17 +452,17 @@ def register(mcp, session) -> list[str]:
                                       remove: bool = False, preset: str | None = None) -> str:
             """The groove: per step, how late (+) or early (-) it is played, in % of a step (with 1/16 steps, +10 is a
             tenth of a sixteenth late). There is one groove. Its steps can be set only while every track has the
-            same length (steps and step length; ostinato_set_length), and its length must divide theirs: else it is
-            refused. The list repeats over the pattern ([0, 15]: swung sixteenths). In steps, not milliseconds: it
+            same step length (ostinato_set_length), and its length must divide every track's length (64 and 32
+            steps: up to 32): else it is refused. The list repeats over the pattern ([0, 15]: swung sixteenths). In steps, not milliseconds: it
             follows the tempo. Ostinato keeps it and writes it into the steps' timing offsets (the FM-1's nudges);
             the notes and their own nudges do not change (what the tools show is without the groove).
-            Which tracks play it: "all" (a new groove starts so; possible only while all tracks have the same length,
-            which fits) or chosen tracks, e.g. [1, 4] (each only while its length fits: the groove's step length and
+            Which tracks play it: "all" (a new groove starts so; possible only while every track's length fits) or chosen tracks, e.g. [1, 4] (each only while its length fits: the groove's step length and
             a multiple of its steps). Changing a track's length switches "all" off (the tracks that still fit keep
             the groove) and takes it off a track that no longer fits; nothing is switched back on by itself.
             percents: e.g. [0, 10, -16, -16]; each within -50..+48. resolution: 64 (default), 32, 16, 8, 4 or 2
               divisions of a step (64: 1.5625% steps).
-            straight=true: every track plays straight; the groove is kept (apply_to brings it back).
+            straight=true: every step of the groove to 0% (as many steps as before; the tracks that play it stay).
+              To stop the groove on tracks but keep its steps, use apply_to.
             apply_to: "all", or the list of tracks to play it (the others play straight).
             remove=true: delete the groove itself (its steps are lost; always possible).
             preset="custom": keep the steps, but as a custom groove (no longer the preset's).
@@ -511,9 +511,10 @@ def register(mcp, session) -> list[str]:
                 return "\n".join([await _run(now), await _run(presets)])
             out = []
             try:
-                if straight and session.groove() is not None:
-                    await _run(session.set_groove_use, False, {x.track: False for x in session.tracks()})
-                if preset is not None and preset.strip().lower() == "custom" and not remove:
+                if straight and not remove:
+                    after = await _run(session.set_groove_straight)
+                    out.append("Groove: every step at 0%." if after else "There is no groove.")
+                elif preset is not None and preset.strip().lower() == "custom" and not remove:
                     await _run(session.set_groove_custom)
                 elif preset is not None and not remove:
                     before, after = await _run(session.set_groove_preset, preset)
@@ -524,7 +525,7 @@ def register(mcp, session) -> list[str]:
                     if after and percents and any(abs(p - q) > 1e-9 for p, q in zip(percents, after.percents)):
                         text += f" (rounded to 1/{after.res} of a step)"
                     out.append(text + f"; was {before.text() if before else 'straight'}.")
-                if apply_to is not None and not straight and not remove:
+                if apply_to is not None and not remove:
                     if isinstance(apply_to, str) and apply_to.strip().lower() == "all":
                         await _run(session.set_groove_use, True)
                     elif isinstance(apply_to, list):

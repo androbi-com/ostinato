@@ -322,7 +322,8 @@ class Session:
     # tracks as per-step timing offsets (Event.offset), which every device with `WriteLimits.offset` plays (SLOOP: its
     # nudges). What is on the device is the notes' own offsets plus the groove written into that track (_rendered):
     # read() takes the groove off, write() puts the wanted one on, so everything above sees the notes without it.
-    # Its steps are edited only while every track has the same length; "all" is switched on only by the user (a length
+    # Its steps are edited only while every track has the same step length (its length divides every track's); "all"
+    # is switched on only by the user, while every track fits (a length
     # change switches it off), a track only while its length fits the groove.
     def groove_supported(self) -> bool:
         b = self.backend
@@ -451,21 +452,23 @@ class Session:
         return [t for t in grids if self._wanted(t, grids) is not None]
 
     def groove_grid(self) -> tuple[Grid | None, str | None]:
-        """-> (the grid every track has, None) or (None, why the groove's steps cannot be edited: the tracks' lengths
-        differ)."""
+        """-> (the grid the groove is edited on, None) or (None, why its steps cannot be edited: the tracks' step
+        lengths differ). The grid: the tracks' common step length, and as steps the greatest common divisor of their
+        lengths (a groove's length must divide it, so that it repeats evenly on every track)."""
         grids = self.grids()
         if any(g is None for g in grids.values()):
             return None, "a groove needs a step grid on every track"
-        if len({(g.steps, g.step) for g in grids.values()}) > 1:
-            return None, ("a groove needs every track to have the same length; now "
+        if len({g.step for g in grids.values()}) > 1:
+            return None, ("a groove needs every track to have the same step length; now "
                           + ", ".join(f"track {t}: {g.steps} × {g.name}" for t, g in grids.items()))
-        return next(iter(grids.values())), None
+        first = next(iter(grids.values()))
+        return Grid(first.step, math.gcd(*(g.steps for g in grids.values())), first.name), None
 
     def set_groove(self, percents: list[float] | None, res: int = 64, source: str = "server"
                    ) -> tuple[Groove | None, Groove | None]:
         """percents: per step, % of a step late (+) or early (-), repeated over the pattern; None or []: straight
-        (always possible). Rounded to 1/res of a step. Only when every track has the same length, and the groove's
-        steps divide it (ValueError otherwise). A new groove (none before) is applied to all tracks; changed steps
+        (always possible). Rounded to 1/res of a step. Only when every track has the same step length, and the
+        groove's steps divide every track's length (ValueError otherwise). A new groove (none before) is applied to all tracks; changed steps
         keep the tracks it is applied to. -> (before, after)."""
         self._need_groove()
         before = self._groove
@@ -475,8 +478,8 @@ class Session:
             if why:
                 raise ValueError(why)
             if grid.steps % len(percents):
-                raise ValueError(f"a groove of {len(percents)} steps does not fit patterns of {grid.steps} steps: its "
-                                 f"length must divide theirs ("
+                raise ValueError(f"a groove of {len(percents)} steps does not repeat evenly on every track: its "
+                                 f"length must divide {grid.steps} ("
                                  + ", ".join(str(n) for n in range(1, min(grid.steps, 64) + 1) if grid.steps % n == 0)
                                  + ")")
             new = Groove.from_percents(percents, grid.step, res)
@@ -492,6 +495,15 @@ class Session:
         self.log("groove", None, (new.text() + (f" (preset {new.name})" if new.name else "")) if new
                  else "groove off (straight)", source=source)
         return new
+
+    def set_groove_straight(self, source: str = "server") -> Groove | None:
+        """Every step of the groove to 0 (on the grid): its length and the tracks that play it stay. Always possible.
+        -> the groove (None: there is none)."""
+        self._need_groove()
+        g = self._groove
+        if g is None or not any(g.values):
+            return g
+        return self._put_groove(g, Groove([0] * len(g.values), g.step, g.res), source)
 
     def set_groove_custom(self, source: str = "server") -> Groove | None:
         """The groove stays as it is, but is no longer a preset: a custom groove. -> the groove."""
@@ -538,7 +550,7 @@ class Session:
 
     def set_groove_use(self, all_tracks: bool | None = None, tracks: dict[int, bool] | None = None,
                        source: str = "server") -> GrooveUse:
-        """all_tracks: apply the groove to every track (only when all have the same length, which fits it), or not
+        """all_tracks: apply the groove to every track (only when every track's length fits it), or not
         (the tracks that fit keep it, one by one). tracks: {track: on} one by one (only with all_tracks off; on only
         where the track's length fits). ValueError when not possible. -> what plays it now."""
         self._need_groove()

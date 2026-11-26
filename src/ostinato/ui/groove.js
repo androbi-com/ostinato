@@ -1,11 +1,10 @@
 // The Groove tab: the device's one groove and which tracks play it.
 //   - the tracks' lengths, drawn to scale and editable here (steps × step length);
-//   - "apply to all tracks": switched on by the user only, while every track has the same length, which fits the
-//     groove; a change of a length switches it off (the server does: the tracks that still fit keep the groove).
+//   - "apply to all tracks": switched on by the user only, while every track's length fits the groove; a change of a length switches it off (the server does: the tracks that still fit keep the groove).
 //     Off, each track has its own switch, usable only while its length fits the groove;
 //   - the groove's steps: one slider per step (as the pan slider: the middle is straight, right is late, left
 //     early), in whole 1/64 of a step, shown in % above; a double-click on the % puts it back to 0. They can be
-//     moved only while every track has the same length. A slider is sent when let go.
+//     moved only while every track has the same step length. A slider is sent when let go.
 import { signal, useSignal } from "@preact/signals";
 import { html } from "./html.js";
 import { act, state, trackData } from "./store.js";
@@ -50,11 +49,11 @@ function Lengths({ st, gs }) {
     <div class="card groove-lengths">
       <div class="row">
         <strong>Track lengths</strong>
-        <span class="tag ${equal ? "ok" : "warn"}">${equal ? `all ${gs.grid.steps} × ${gs.grid.name}` : "not all the same"}</span>
+        <span class="tag ${equal ? "ok" : "warn"}">${equal ? `all ${gs.grid.name}` : "different step lengths"}</span>
         <span class="spacer"></span>
         <label class="check" title=${!g ? "There is no groove yet: move a slider below to make one"
             : use.all ? "Every track plays the groove (a change of a track's length switches this off)"
-            : gs.fits_all ? "Every track plays the groove" : "Possible only while every track has the same length, which fits the groove"}>
+            : gs.fits_all ? "Every track plays the groove" : "Possible only while every track's length fits the groove"}>
           <input type="checkbox" checked=${!!g && use.all} disabled=${!g || (!use.all && !gs.fits_all)}
             onChange=${e => useGroove({ all: e.target.checked }, "Apply to all tracks")} />
           Apply groove to all tracks</label>
@@ -161,7 +160,7 @@ function GrooveEditor({ st, gs }) {
           </select></label>
         <label class="mix">Steps
           <select value=${n} disabled=${!editable} onChange=${e => setLength(Number(e.target.value))}
-            title=${`The groove's length; it repeats over the patterns (${steps} steps), so it divides theirs`}>
+            title=${`The groove's length: it divides every track's length (up to ${steps} steps), so it repeats evenly on each`}>
             ${(divisors.includes(n) ? divisors : [n, ...divisors]).map(k => html`<option key=${k} value=${k}>${k}</option>`)}
           </select></label>
         <label class="mix">Range
@@ -169,16 +168,16 @@ function GrooveEditor({ st, gs }) {
             title="How far a slider reaches either way, in % of a step">
             ${RANGES.map(r => html`<option key=${r} value=${r}>±${r}%</option>`)}</select></label>
         <span class="spacer"></span>
-        <button class="ghost" disabled=${!g || !gs.playing.length}
-          title="Every track plays straight; the groove is kept (tick the tracks, or all, to hear it again)"
-          onClick=${() => useGroove({ none: true }, "Straight")}>Straight</button>
+        <button class="ghost" disabled=${!g || !values.some(v => v !== 0)}
+          title="Every step to 0% (as a double-click on each percentage); the groove's length and its tracks stay"
+          onClick=${() => { draft.value = null; act("/api/ui/groove", { straight: true }, "Straight"); }}>Straight</button>
       </div>
       ${(() => {
         const p = gs.presets.find(x => x.name === gs.preset);
         return p && html`<p class="preset-note"><strong>${p.label}</strong>: ${p.description}. <em>${p.source}</em>.</p>`;
       })()}
-      ${!editable && html`<p class="notes">The steps can be changed while every track has the same length: make them equal
-        above.</p>`}
+      ${!editable && html`<p class="notes">The steps can be changed while every track has the same step length: make
+        them equal above.</p>`}
       ${editable && off && html`<p class="notes">This groove was made for steps of ${g.step} beats; the tracks now have
         ${gs.grid.name} steps. Moving a slider makes it a groove for ${gs.grid.name}.</p>`}
       <div class="groove-grid">
